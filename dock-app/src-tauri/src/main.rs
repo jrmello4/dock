@@ -356,8 +356,12 @@ mod win32 {
     static APPBAR_REGISTERED: AtomicBool = AtomicBool::new(false);
     static MAIN_APPBAR_HWND: AtomicIsize = AtomicIsize::new(0);
     static APPBAR_CALLBACK_MSG: OnceLock<u32> = OnceLock::new();
+    static TASKBAR_CREATED_MSG: OnceLock<u32> = OnceLock::new();
     static APPBAR_RESERVED_PX: AtomicI32 = AtomicI32::new(0);
     static APPBAR_SUBCLASS_HWND: AtomicIsize = AtomicIsize::new(0);
+    static DESIRED_RESERVE_PX: AtomicI32 = AtomicI32::new(0);
+    static RESERVATION_SUSPENDED: AtomicBool = AtomicBool::new(false);
+    static TASKBAR_HIDDEN: AtomicBool = AtomicBool::new(false);
     static WATCHDOG_CHILD: OnceLock<Mutex<Option<std::process::Child>>> = OnceLock::new();
     static WATCHDOG_HELPER: OnceLock<Mutex<Option<std::path::PathBuf>>> = OnceLock::new();
 
@@ -392,6 +396,14 @@ mod win32 {
     fn get_appbar_callback_msg() -> u32 {
         *APPBAR_CALLBACK_MSG.get_or_init(|| unsafe {
             let name = to_wide("PrimoDockAppBarCallbackMsg_v1");
+            RegisterWindowMessageW(name.as_ptr())
+        })
+    }
+
+    /// Broadcast message the shell sends whenever Explorer (re)creates the taskbar.
+    fn get_taskbar_created_msg() -> u32 {
+        *TASKBAR_CREATED_MSG.get_or_init(|| unsafe {
+            let name = to_wide("TaskbarCreated");
             RegisterWindowMessageW(name.as_ptr())
         })
     }
@@ -481,6 +493,19 @@ mod win32 {
             }
             return 0;
         }
+
+        // Explorer restarted: the shell lost every AppBar registration and re-created the native
+        // taskbar windows. Re-hide them and register/reserve again so the desktop does not break.
+        let taskbar_msg = get_taskbar_created_msg();
+        if taskbar_msg != 0 && msg == taskbar_msg {
+            APPBAR_REGISTERED.store(false, Ordering::SeqCst);
+            if TASKBAR_HIDDEN.load(Ordering::SeqCst) {
+                set_windows_taskbar_visible(false);
+            }
+            apply_desired_reservation();
+            return 0;
+        }
+
         DefSubclassProc(hwnd, msg, wparam, lparam)
     }
 
@@ -493,6 +518,34 @@ mod win32 {
                 APPBAR_SUBCLASS_HWND.store(hwnd, Ordering::SeqCst);
             }
         }
+    }
+
+    /// Stores the reservation requested by the UI and applies it immediately, unless a fullscreen
+    /// app has suspended the reservation.
+    pub fn set_desired_reserve_px(reserved_physical_px: i32) {
+        DESIRED_RESERVE_PX.store(reserved_physical_px.max(0), Ordering::SeqCst);
+        apply_desired_reservation();
+    }
+
+    /// Suspends or restores the work-area reservation (used while a fullscreen app is in front).
+    pub fn set_reservation_suspended(suspended: bool) {
+        if RESERVATION_SUSPENDED.swap(suspended, Ordering::SeqCst) != suspended {
+            apply_desired_reservation();
+        }
+    }
+
+    /// Re-applies the current reservation (DPI/monitor changes, taskbar recreation).
+    pub fn reapply_desired_reservation() {
+        apply_desired_reservation();
+    }
+
+    fn apply_desired_reservation() {
+        let reserved = if RESERVATION_SUSPENDED.load(Ordering::SeqCst) {
+            0
+        } else {
+            DESIRED_RESERVE_PX.load(Ordering::SeqCst)
+        };
+        set_reserved_bottom_work_area(reserved);
     }
 
     /// Ensures only a single instance of PrimoDock runs at any time (`CreateMutexW`).
@@ -666,7 +719,8 @@ mod win32 {
                 let _ = std::fs::remove_file(path);
             }
         }
-        set_reserved_bottom_work_area(0);
+        RESERVATION_SUSPENDED.store(false, Ordering::SeqCst);
+        set_desired_reserve_px(0);
         set_windows_taskbar_visible(true);
     }
 
@@ -1021,6 +1075,7 @@ mod win32 {
     }
 
     pub fn set_windows_taskbar_visible(visible: bool) {
+        TASKBAR_HIDDEN.store(!visible, Ordering::SeqCst);
         unsafe {
             // Enumerate every top-level window: `FindWindowW` only returns the first match, which
             // left the second/third `Shell_SecondaryTrayWnd` visible on multi-monitor setups.
@@ -1739,30 +1794,16 @@ fn set_dock_screen_mode(
     {
         let native_hwnd = window.hwnd().map(|h| h.0 as isize).unwrap_or(0);
         win32::cache_main_window_hwnd(native_hwnd);
-        let hwnd = if native_hwnd != 0 {
-            native_hwnd
-        } else {
-            win32::resolve_main_window_hwnd()
-        };
-        let mon_rect = if let Ok(Some(mon)) = window.current_monitor() {
-            let pos = mon.position();
-            let sz = mon.size();
-            win32::RECT {
-                left: pos.x,
-                top: pos.y,
-                right: pos.x + sz.width as i32,
-                bottom: pos.y + sz.height as i32,
-            }
-        } else {
-            win32::get_window_monitor_rect(hwnd)
-        };
+        if native_hwnd == 0 {
+            let _ = win32::resolve_main_window_hwnd();
+        }
         if is_reserve {
             // Convert CSS logical pixels from JS into physical monitor pixels for HiDPI (125%, 150%, 200%)!
             let scale = window.scale_factor().unwrap_or(1.0);
             let physical_px = ((reserved_px.max(68) as f64) * scale).round() as i32;
-            win32::sync_monitor_appbar_reservation(hwnd, mon_rect, physical_px);
+            win32::set_desired_reserve_px(physical_px);
         } else {
-            win32::sync_monitor_appbar_reservation(hwnd, mon_rect, 0);
+            win32::set_desired_reserve_px(0);
         }
     }
 }
@@ -1786,6 +1827,18 @@ fn quit_and_restore_taskbar(app: tauri::AppHandle) {
         win32::stop_crash_watchdog_and_restore();
     }
     app.exit(0);
+}
+
+/// User-facing emergency restore: gives the screen back to Windows without quitting the dock.
+#[tauri::command]
+fn restore_windows_taskbar(state: State<'_, AppState>) {
+    state.taskbar_hidden.store(false, Ordering::SeqCst);
+    state.reserve_work_area.store(false, Ordering::SeqCst);
+    #[cfg(target_os = "windows")]
+    {
+        win32::set_desired_reserve_px(0);
+        win32::set_windows_taskbar_visible(true);
+    }
 }
 
 #[tauri::command]
@@ -1907,12 +1960,15 @@ fn main() {
         let _ = win32::get_original_work_area();
     }
 
-    // Ensure native taskbar and original WorkArea are ALWAYS restored if the app ever panics
-    std::panic::set_hook(Box::new(|_| {
+    // Ensure native taskbar and original WorkArea are ALWAYS restored if the app ever panics,
+    // while still letting the default hook print the panic message.
+    let previous_panic_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
         #[cfg(target_os = "windows")]
         {
             win32::stop_crash_watchdog_and_restore();
         }
+        previous_panic_hook(info);
     }));
 
     let rect_for_setup = Arc::clone(&interactive_rect);
@@ -1949,24 +2005,8 @@ fn main() {
 
                     let scale = window.scale_factor().unwrap_or(1.0);
                     let initial_physical_reserve = (82.0 * scale).round() as i32;
-                    let mon_rect = if let Ok(Some(mon)) = window.current_monitor() {
-                        let pos = mon.position();
-                        let sz = mon.size();
-                        win32::RECT {
-                            left: pos.x,
-                            top: pos.y,
-                            right: pos.x + sz.width as i32,
-                            bottom: pos.y + sz.height as i32,
-                        }
-                    } else {
-                        win32::get_window_monitor_rect(hwnd)
-                    };
                     win32::set_windows_taskbar_visible(false);
-                    win32::sync_monitor_appbar_reservation(
-                        hwnd,
-                        mon_rect,
-                        initial_physical_reserve,
-                    );
+                    win32::set_desired_reserve_px(initial_physical_reserve);
 
                     let win_clone = window.clone();
                     let rect_clone = Arc::clone(&rect_for_setup);
@@ -1977,6 +2017,7 @@ fn main() {
 
                     std::thread::spawn(move || {
                         let mut currently_ignoring = false;
+                        let mut last_fullscreen = false;
                         let mut tick_count: u32 = 0;
                         let mut sleep_ms: u64 = 28;
                         loop {
@@ -1987,7 +2028,7 @@ fn main() {
                             if tick_count.is_multiple_of(5)
                                 && win32::is_emergency_restore_hotkey_pressed()
                             {
-                                win32::set_reserved_bottom_work_area(0);
+                                win32::set_desired_reserve_px(0);
                                 win32::set_windows_taskbar_visible(true);
                             }
 
@@ -1998,6 +2039,12 @@ fn main() {
                             }
 
                             let is_fullscreen = fullscreen_clone.load(Ordering::SeqCst);
+                            if is_fullscreen != last_fullscreen {
+                                last_fullscreen = is_fullscreen;
+                                // Give borderless fullscreen apps the whole monitor: drop the
+                                // reservation while fullscreen is in front and restore it on exit.
+                                win32::set_reservation_suspended(is_fullscreen);
+                            }
                             if is_fullscreen {
                                 sleep_ms = 180;
                                 if !currently_ignoring {
@@ -2072,6 +2119,14 @@ fn main() {
                     win32::stop_crash_watchdog_and_restore();
                 }
             }
+            // A DPI change moves the dock to a different physical pixel grid: re-apply the
+            // reservation so the boundary does not drift on 125%/150%/200% scaling changes.
+            #[cfg(target_os = "windows")]
+            {
+                if let WindowEvent::ScaleFactorChanged { .. } = event {
+                    win32::reapply_desired_reservation();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             get_system_metrics,
@@ -2088,6 +2143,7 @@ fn main() {
             set_dock_screen_mode,
             update_interactive_hitbox,
             quit_and_restore_taskbar,
+            restore_windows_taskbar,
             launch_target
         ])
         .run(tauri::generate_context!())

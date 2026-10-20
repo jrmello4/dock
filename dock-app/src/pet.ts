@@ -11,6 +11,7 @@ export class DockPetController {
   private cpuUsage = 24;
   private moodTimer: number | null = null;
   private rafId: number | null = null;
+  private paused = false;
   private lastStepTime = 0;
   private barWidth = 640;
 
@@ -72,8 +73,24 @@ export class DockPetController {
     return 'stroll';
   }
 
+  public setPaused(paused: boolean): void {
+    if (this.paused === paused) return;
+    this.paused = paused;
+    if (paused) {
+      if (this.rafId !== null) {
+        cancelAnimationFrame(this.rafId);
+        this.rafId = null;
+      }
+    } else if (this.rafId === null) {
+      this.lastStepTime = 0;
+      this.startLoop();
+    }
+  }
+
   private startLoop(): void {
+    if (this.paused) return;
     const step = (now: number) => {
+      if (this.paused) return;
       if (this.petType !== 'none') {
         const mode = this.getActivityMode();
         // Always keeps moving along the dock bar!

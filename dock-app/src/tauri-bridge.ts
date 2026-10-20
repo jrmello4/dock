@@ -173,6 +173,16 @@ export async function setNativeTaskbarHidden(hidden: boolean): Promise<void> {
   }
 }
 
+export async function restoreWindowsTaskbar(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('restore_windows_taskbar');
+  } catch {
+    // Ignore
+  }
+}
+
 export async function quitAndRestoreTaskbar(): Promise<void> {
   if (!isTauriRuntime()) return;
   try {
