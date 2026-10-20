@@ -380,6 +380,12 @@ export function renderWidgetPopoverContent(item: DockItem, state: DockState): st
       );
       const safeArtUrl = sanitizeUrl(state.music.artworkUrl);
 
+      const estimatedPrefix = state.music.estimated ? '~' : '';
+      const estimatedSuffix = state.music.estimated ? ' (estimado)' : '';
+      const mediaHeader = state.music.detected
+        ? `🟢 Conectado ao ${escapeHtml(state.music.sourceApp)} (${estimatedPrefix}${formatTime(state.music.progressSec)} / ${estimatedPrefix}${formatTime(totalDuration)}${estimatedSuffix})`
+        : `🎵 Rádio Local (${formatTime(state.music.progressSec)} / ${formatTime(totalDuration)})`;
+
       const tracksHtml = PLAYLIST.map(
         (t, idx) => `
         <button type="button" class="track-row ${!state.music.detected && idx === state.music.trackIndex ? 'active' : ''}" data-music-pick="${idx}">
@@ -397,11 +403,7 @@ export function renderWidgetPopoverContent(item: DockItem, state: DockState): st
                 : ''
             }
             <div>
-              <span class="pop-kicker">${
-                state.music.detected
-                  ? `🟢 Conectado ao ${escapeHtml(state.music.sourceApp)} (~${formatTime(state.music.progressSec)} / ~${formatTime(totalDuration)} estimado)`
-                  : `🎵 Rádio Local (${formatTime(state.music.progressSec)} / ${formatTime(totalDuration)})`
-              }</span>
+              <span class="pop-kicker">${mediaHeader}</span>
               <h4>${escapeHtml(title)}</h4>
               <p class="pop-sub" style="margin:2px 0 0">${escapeHtml(artist)}</p>
             </div>

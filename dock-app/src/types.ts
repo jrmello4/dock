@@ -112,6 +112,8 @@ export interface LiveMediaState {
   trackIndex: number;
   progressSec: number;
   durationSec: number;
+  /** `true` only when the timeline came from the title heuristic, not from Windows SMTC. */
+  estimated: boolean;
   soundSynthEnabled: boolean;
 }
 

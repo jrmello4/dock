@@ -358,6 +358,7 @@ export function createDefaultState(): DockState {
       trackIndex: 0,
       progressSec: 0,
       durationSec: 214,
+      estimated: true,
       soundSynthEnabled: false,
     },
     weather: {
