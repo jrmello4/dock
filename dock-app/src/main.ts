@@ -26,6 +26,7 @@ import {
   launchTarget,
   OpenWindowInfo,
   quitAndRestoreTaskbar,
+  restoreWindowsTaskbar,
   sendNativeMediaControl,
   setDockScreenMode,
   setNativeTaskbarHidden,
@@ -121,6 +122,7 @@ class PrimoDockApp {
   private commandSelectedIndex = 0;
   private currentCommandActions: CommandBarAction[] = [];
   private activeSettingsTab: SettingsTab = 'appearance';
+  private readonly reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // Cached centers for zero-layout-thrashing magnification
   private cachedItemCenters: CachedDockItemCenter[] = [];
@@ -348,6 +350,12 @@ class PrimoDockApp {
       this.dockWrapperEl.classList.toggle('autohidden', shouldHide);
       window.setTimeout(() => this.syncHitboxToRust(), 60);
     }
+
+    // Stop the pet/particle rAF loops while the dock is off-screen or a fullscreen app is in
+    // front: they were burning a full 60 fps frame loop 24/7 for animations nobody could see.
+    const shouldAnimate = !isFullscreen && !shouldHide && !this.reduceMotion;
+    this.petController.setPaused(!shouldAnimate);
+    this.seasonalEngine.setPaused(!shouldAnimate);
   }
 
   private syncHitboxToRust(): void {
@@ -1930,6 +1938,9 @@ class PrimoDockApp {
             <button type="button" class="chip" data-toggle-reflect="true">
               ${this.state.showReflections ? '✨ Reflexo Espelhado: ATIVO' : '✨ Reflexo Espelhado: INATIVO'}
             </button>
+            <button type="button" class="chip" style="border-color:#22c55e;color:#bbf7d0" data-restore-windows="true" title="Devolve a barra original do Windows e a área de trabalho sem fechar o Dock">
+              🛟 Restaurar Barra do Windows
+            </button>
             <button type="button" class="chip" data-reset-defaults="true" style="border-color:#f59e0b;color:#fde68a">
               ↺ Restaurar Padrões de Fábrica
             </button>
@@ -2034,6 +2045,17 @@ class PrimoDockApp {
       this.state.showReflections = !this.state.showReflections;
       savePersistentState(this.state);
       this.applyThemeAndVariables();
+      this.renderSettingsPopover();
+    });
+
+    this.popoverEl.querySelector('[data-restore-windows]')?.addEventListener('click', () => {
+      restoreWindowsTaskbar();
+      this.nativeTaskbarHidden = false;
+      // Leave "float" mode so the user keeps the restored taskbar/desktop until choosing
+      // "reserve" or "autohide" again.
+      this.state.dockScreenMode = 'float';
+      savePersistentState(this.state);
+      this.syncScreenModeToWindows();
       this.renderSettingsPopover();
     });
 
@@ -2341,6 +2363,9 @@ class PrimoDockApp {
 
     // 2. Single-pass Desktop Snapshot (open Windows + Now Playing media in 1 EnumWindows pass!) every 1.5s
     const pollWindowsAndMedia = async () => {
+      // The dock is invisible during fullscreen playback/gaming; skip the expensive EnumWindows
+      // + media snapshot until the metrics poll reports that fullscreen ended.
+      if (this.state.metrics.fullscreenActive) return;
       const { windows: wins, media } = await fetchDesktopSnapshot();
 
       const prevStructSig = this.openWindows

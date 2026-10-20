@@ -1,0 +1,7 @@
+# Keep the tree LF on every platform; the Windows build does not need CRLF.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.icns binary

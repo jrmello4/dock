@@ -15,6 +15,7 @@ export class SeasonalEffectsEngine {
   private mode: string | undefined;
   private particles: Particle[] = [];
   private rafId: number | null = null;
+  private paused = false;
   private tick = 0;
 
   constructor(host: HTMLElement) {
@@ -45,10 +46,27 @@ export class SeasonalEffectsEngine {
       return;
     }
 
-    this.canvas.style.display = 'block';
+    this.canvas.style.display = this.paused ? 'none' : 'block';
     this.initParticles();
-    if (this.rafId === null) {
+    if (!this.paused && this.rafId === null) {
       this.loop();
+    }
+  }
+
+  public setPaused(paused: boolean): void {
+    if (this.paused === paused) return;
+    this.paused = paused;
+    if (paused) {
+      if (this.rafId !== null) {
+        cancelAnimationFrame(this.rafId);
+        this.rafId = null;
+      }
+      this.canvas.style.display = 'none';
+    } else if (this.mode) {
+      this.canvas.style.display = 'block';
+      if (this.rafId === null) {
+        this.loop();
+      }
     }
   }
 
@@ -159,6 +177,10 @@ export class SeasonalEffectsEngine {
       ctx.restore();
     }
 
-    this.rafId = requestAnimationFrame(this.loop);
+    if (!this.paused) {
+      this.rafId = requestAnimationFrame(this.loop);
+    } else {
+      this.rafId = null;
+    }
   };
 }
