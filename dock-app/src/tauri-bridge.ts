@@ -26,6 +26,8 @@ export interface NowPlayingPayload {
   hwnd: number;
   position_sec: number;
   duration_sec: number;
+  /** Present since the SMTC integration; absent means heuristic (estimated). */
+  estimated?: boolean;
 }
 
 export interface DesktopSnapshotPayload {
@@ -77,6 +79,7 @@ export async function fetchDesktopSnapshot(): Promise<DesktopSnapshotPayload> {
       hwnd: 0,
       position_sec: 0,
       duration_sec: 180,
+      estimated: true,
     },
   };
   if (!isTauriRuntime()) return empty;

@@ -2404,13 +2404,22 @@ class PrimoDockApp {
         this.state.music.artist = media.artist || media.source_app;
         this.state.music.sourceApp = media.source_app;
         this.state.music.hwnd = media.hwnd;
+        this.state.music.estimated = media.estimated !== false;
 
         if (typeof media.position_sec === 'number') {
-          if (isNewSong || Math.abs(this.state.music.progressSec - media.position_sec) > 3) {
-            this.state.music.progressSec = media.position_sec;
+          const reported = media.position_sec;
+          // Some apps expose an SMTC session but keep Position at 0 (e.g. Chrome playing a local
+          // file). Never rewind the local clock to 0 for a track that is already running.
+          const canRewind = reported > 0 || isNewSong || this.state.music.progressSec <= 3;
+          if (isNewSong || (canRewind && Math.abs(this.state.music.progressSec - reported) > 3)) {
+            this.state.music.progressSec = reported;
           }
         }
-        if (typeof media.duration_sec === 'number' && media.duration_sec > 0 && isNewSong) {
+        if (
+          typeof media.duration_sec === 'number' &&
+          media.duration_sec > 0 &&
+          (isNewSong || this.state.music.durationSec <= 0)
+        ) {
           this.state.music.durationSec = media.duration_sec;
         }
 
@@ -2438,6 +2447,7 @@ class PrimoDockApp {
         this.state.music.hwnd = 0;
         this.state.music.progressSec = 0;
         this.state.music.durationSec = PLAYLIST[this.state.music.trackIndex]?.durationSec || 214;
+        this.state.music.estimated = true;
         this.lastArtworkQuery = '';
         this.updateLiveWidgetsInPlace(['music']);
         if (this.state.activePanelItemId) this.renderPopover();

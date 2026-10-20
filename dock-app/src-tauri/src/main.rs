@@ -64,6 +64,8 @@ pub struct NowPlayingInfo {
     pub hwnd: isize,
     pub position_sec: u32,
     pub duration_sec: u32,
+    /// `true` when the timeline came from the window-title heuristic instead of SMTC.
+    pub estimated: bool,
 }
 
 #[derive(Serialize)]
@@ -91,6 +93,11 @@ mod win32 {
         Mutex, OnceLock,
     };
     use std::time::Instant;
+    use windows::Media::Control::{
+        GlobalSystemMediaTransportControlsSession,
+        GlobalSystemMediaTransportControlsSessionManager,
+        GlobalSystemMediaTransportControlsSessionPlaybackStatus,
+    };
 
     #[repr(C)]
     pub struct POINT {
@@ -191,6 +198,7 @@ mod win32 {
         ) -> i32;
         pub fn IsWindowVisible(hWnd: isize) -> i32;
         pub fn IsIconic(hWnd: isize) -> i32;
+        pub fn IsZoomed(hWnd: isize) -> i32;
         pub fn GetWindowTextLengthW(hWnd: isize) -> i32;
         pub fn GetWindowTextW(hWnd: isize, lpString: *mut u16, nMaxCount: i32) -> i32;
         pub fn GetClassNameW(hWnd: isize, lpClassName: *mut u16, nMaxCount: i32) -> i32;
@@ -233,6 +241,11 @@ mod win32 {
             lpbmi: *mut BITMAPINFOHEADER,
             usage: u32,
         ) -> i32;
+    }
+
+    #[link(name = "runtimeobject")]
+    extern "system" {
+        pub fn RoInitialize(initType: u32) -> i32;
     }
 
     #[link(name = "comctl32")]
@@ -391,6 +404,230 @@ mod win32 {
 
     fn get_watchdog_helper_slot() -> &'static Mutex<Option<std::path::PathBuf>> {
         WATCHDOG_HELPER.get_or_init(|| Mutex::new(None))
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // System Media Transport Controls (SMTC): the authoritative Windows "now playing" source.
+    // Queried on a dedicated thread with COM/WinRT initialized once, then cached, so the UI thread
+    // never blocks on a WinRT async call.
+    // ---------------------------------------------------------------------------------------------
+
+    #[derive(Clone)]
+    pub struct SmtcNowPlaying {
+        pub title: String,
+        pub artist: String,
+        pub source_app: String,
+        pub playing: bool,
+        pub position_sec: u32,
+        pub duration_sec: u32,
+    }
+
+    struct SmtcCache {
+        updated: Option<Instant>,
+        data: Option<SmtcNowPlaying>,
+    }
+
+    static SMTC_CACHE: OnceLock<Mutex<SmtcCache>> = OnceLock::new();
+    static SMTC_PROBE_STARTED: AtomicBool = AtomicBool::new(false);
+
+    const RO_INIT_MULTITHREADED: u32 = 1;
+
+    thread_local! {
+        static WINRT_INITIALIZED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    fn ensure_winrt_initialized() -> bool {
+        WINRT_INITIALIZED.with(|initialized| {
+            if initialized.get() {
+                return true;
+            }
+            let hr = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+            // S_OK (0), S_FALSE (already initialized) and RPC_E_CHANGED_MODE (already an STA) are
+            // all usable; anything else means WinRT is unavailable on this thread.
+            let ok = matches!(hr, 0 | 1) || hr as u32 == 0x8001_0106;
+            if ok {
+                initialized.set(true);
+            }
+            ok
+        })
+    }
+
+    fn friendly_source_app(aumid: &str) -> String {
+        let lower = aumid.to_lowercase();
+        let label = if lower.contains("spotify") {
+            "Spotify"
+        } else if lower.contains("msedge") {
+            "Microsoft Edge"
+        } else if lower.contains("chrome") {
+            "Google Chrome"
+        } else if lower.contains("firefox") {
+            "Firefox"
+        } else if lower.contains("brave") {
+            "Brave"
+        } else if lower.contains("vlc") {
+            "VLC"
+        } else if lower.contains("applemusic")
+            || (lower.contains("apple") && lower.contains("music"))
+        {
+            "Apple Music"
+        } else if lower.contains("tidal") {
+            "TIDAL"
+        } else if lower.contains("deezer") {
+            "Deezer"
+        } else {
+            return aumid.split('!').next().unwrap_or(aumid).trim().to_string();
+        };
+        label.to_string()
+    }
+
+    fn smtc_timeline_secs(session: &GlobalSystemMediaTransportControlsSession) -> (u32, u32) {
+        let Ok(timeline) = session.GetTimelineProperties() else {
+            return (0, 0);
+        };
+        let to_sec = |ticks: i64| (ticks.max(0) / 10_000_000) as u32;
+        let start = timeline.StartTime().map(|t| t.Duration).unwrap_or(0);
+        let end = timeline.EndTime().map(|t| t.Duration).unwrap_or(0);
+        let position = timeline.Position().map(|t| t.Duration).unwrap_or(0);
+        let duration = to_sec(end.saturating_sub(start));
+        let position = to_sec(position.saturating_sub(start));
+        (
+            if duration > 0 {
+                position.min(duration)
+            } else {
+                position
+            },
+            duration,
+        )
+    }
+
+    /// Blocking WinRT query. Must only be called from a dedicated probe thread (or `--probe-media`).
+    pub fn query_smtc_now_playing() -> Option<SmtcNowPlaying> {
+        if !ensure_winrt_initialized() {
+            return None;
+        }
+        let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
+            .ok()?
+            .join()
+            .ok()?;
+        let session = manager.GetCurrentSession().ok()?;
+        let properties = session.TryGetMediaPropertiesAsync().ok()?.join().ok()?;
+
+        let title = properties
+            .Title()
+            .map(|t| t.to_string())
+            .unwrap_or_default();
+        if title.trim().is_empty() {
+            return None;
+        }
+        let artist = properties
+            .Artist()
+            .map(|t| t.to_string())
+            .unwrap_or_default();
+        let aumid = session
+            .SourceAppUserModelId()
+            .map(|a| a.to_string())
+            .unwrap_or_default();
+        let source_app = friendly_source_app(&aumid);
+        let playing = session
+            .GetPlaybackInfo()
+            .ok()
+            .and_then(|info| info.PlaybackStatus().ok())
+            .is_some_and(|status| {
+                status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing
+            });
+        let (position_sec, duration_sec) = smtc_timeline_secs(&session);
+
+        Some(SmtcNowPlaying {
+            title: title.trim().to_string(),
+            artist: if artist.trim().is_empty() {
+                source_app.clone()
+            } else {
+                artist.trim().to_string()
+            },
+            source_app,
+            playing,
+            position_sec,
+            duration_sec,
+        })
+    }
+
+    fn smtc_cache() -> &'static Mutex<SmtcCache> {
+        SMTC_CACHE.get_or_init(|| {
+            Mutex::new(SmtcCache {
+                updated: None,
+                data: None,
+            })
+        })
+    }
+
+    fn ensure_smtc_probe() {
+        if SMTC_PROBE_STARTED.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        std::thread::spawn(|| loop {
+            let data = query_smtc_now_playing();
+            if let Ok(mut cache) = smtc_cache().lock() {
+                cache.data = data;
+                cache.updated = Some(Instant::now());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+        });
+    }
+
+    /// Cached SMTC snapshot; `None` when there is no session or the probe went stale (5 s), in
+    /// which case the window-title heuristic in `detect_now_playing` takes over.
+    fn cached_smtc_now_playing() -> Option<SmtcNowPlaying> {
+        ensure_smtc_probe();
+        let cache = smtc_cache().lock().ok()?;
+        let fresh = cache
+            .updated
+            .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(5));
+        if fresh {
+            cache.data.clone()
+        } else {
+            None
+        }
+    }
+
+    /// Starts the background probe thread (idempotent).
+    pub fn start_smtc_probe() {
+        ensure_smtc_probe();
+    }
+
+    /// Reads the cached snapshot exactly like the UI does (used by `--probe-media`).
+    pub fn cached_smtc_snapshot() -> Option<SmtcNowPlaying> {
+        cached_smtc_now_playing()
+    }
+
+    fn find_player_window(windows: &[OpenWindowInfo], source: &str) -> isize {
+        let source_lower = source.to_lowercase();
+        let matches_source = |w: &OpenWindowInfo| {
+            let exe = w.exe_name.to_lowercase();
+            let title = w.title.to_lowercase();
+            match source_lower.as_str() {
+                "spotify" => exe.contains("spotify"),
+                "microsoft edge" => exe == "msedge.exe",
+                "google chrome" => exe == "chrome.exe",
+                "firefox" => exe == "firefox.exe",
+                "brave" => exe == "brave.exe",
+                "vlc" => exe.contains("vlc"),
+                "apple music" => exe.contains("applemusic") || title.contains("apple music"),
+                _ => title.contains(&source_lower) || exe.contains(&source_lower),
+            }
+        };
+
+        let mut fallback = 0;
+        for w in windows {
+            if matches_source(w) {
+                if w.is_focused {
+                    return w.hwnd;
+                }
+                if fallback == 0 {
+                    fallback = w.hwnd;
+                }
+            }
+        }
+        fallback
     }
 
     fn get_appbar_callback_msg() -> u32 {
@@ -1202,6 +1439,12 @@ mod win32 {
             if fg == 0 || IsIconic(fg) != 0 {
                 return false;
             }
+            // A maximized window also covers the monitor bounds (especially with the taskbar
+            // hidden), but it is not fullscreen: treating it as such hid the dock for any
+            // maximized app.
+            if IsZoomed(fg) != 0 {
+                return false;
+            }
             let mut pid: u32 = 0;
             GetWindowThreadProcessId(fg, &mut pid);
             if pid == self_pid {
@@ -1440,6 +1683,23 @@ mod win32 {
 
     /// Detects real music playing across Spotify, Apple Music, Tidal, Deezer, VLC, and Browsers
     pub fn detect_now_playing(windows: &[OpenWindowInfo]) -> NowPlayingInfo {
+        // Windows SMTC first: real title/artist/playback state/position, including browser tabs.
+        if let Some(smtc) = cached_smtc_now_playing() {
+            let hwnd = find_player_window(windows, &smtc.source_app);
+            return NowPlayingInfo {
+                detected: true,
+                source_app: smtc.source_app,
+                playing: smtc.playing,
+                title: smtc.title,
+                artist: smtc.artist,
+                hwnd,
+                position_sec: smtc.position_sec,
+                duration_sec: smtc.duration_sec,
+                estimated: false,
+            };
+        }
+
+        // Fallback: window-title heuristics for players that do not expose SMTC.
         for w in windows {
             let exe_lower = w.exe_name.to_lowercase();
             if exe_lower == "spotify.exe"
@@ -1474,6 +1734,7 @@ mod win32 {
                         hwnd: w.hwnd,
                         position_sec,
                         duration_sec,
+                        estimated: true,
                     };
                 }
                 if let Some((artist, song)) = t.split_once(" - ") {
@@ -1490,6 +1751,7 @@ mod win32 {
                         hwnd: w.hwnd,
                         position_sec,
                         duration_sec,
+                        estimated: true,
                     };
                 }
                 let (position_sec, duration_sec) = compute_media_timeline(app_label, t, true);
@@ -1502,6 +1764,7 @@ mod win32 {
                     hwnd: w.hwnd,
                     position_sec,
                     duration_sec,
+                    estimated: true,
                 };
             }
         }
@@ -1546,6 +1809,7 @@ mod win32 {
                         hwnd: w.hwnd,
                         position_sec,
                         duration_sec,
+                        estimated: true,
                     };
                 }
                 let (position_sec, duration_sec) = compute_media_timeline(source, &clean, true);
@@ -1558,6 +1822,7 @@ mod win32 {
                     hwnd: w.hwnd,
                     position_sec,
                     duration_sec,
+                    estimated: true,
                 };
             }
         }
@@ -1571,6 +1836,7 @@ mod win32 {
             hwnd: 0,
             position_sec: 0,
             duration_sec: 180,
+            estimated: true,
         }
     }
 
@@ -1705,6 +1971,7 @@ fn get_desktop_snapshot() -> DesktopSnapshot {
                 hwnd: 0,
                 position_sec: 0,
                 duration_sec: 180,
+                estimated: true,
             },
         }
     }
@@ -1909,6 +2176,25 @@ fn main() {
     #[cfg(target_os = "windows")]
     {
         let args: Vec<String> = std::env::args().collect();
+
+        // Diagnostic entry point: `primodock-tauri.exe --probe-media` dumps the current SMTC
+        // session to %TEMP%\primodock-smtc-probe.json without touching the shell/taskbar.
+        if args.get(1).map(String::as_str) == Some("--probe-media") {
+            // Exercise the same path the dock uses: background probe thread + cache.
+            win32::start_smtc_probe();
+            std::thread::sleep(std::time::Duration::from_millis(1600));
+            let payload = match win32::cached_smtc_snapshot() {
+                Some(m) => format!(
+                    "{{\"detected\":true,\"title\":{:?},\"artist\":{:?},\"source_app\":{:?},\"playing\":{},\"position_sec\":{},\"duration_sec\":{}}}",
+                    m.title, m.artist, m.source_app, m.playing, m.position_sec, m.duration_sec
+                ),
+                None => "{\"detected\":false}".to_string(),
+            };
+            let path = std::env::temp_dir().join("primodock-smtc-probe.json");
+            let _ = std::fs::write(&path, &payload);
+            return;
+        }
+
         if args.len() >= 7 && args[1] == "--watchdog" {
             let appbar_hwnd = args
                 .get(7)
