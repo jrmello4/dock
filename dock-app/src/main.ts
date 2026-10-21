@@ -2423,7 +2423,18 @@ class PrimoDockApp {
           this.state.music.durationSec = media.duration_sec;
         }
 
-        if (songKey !== this.lastArtworkQuery) {
+        const smtcArtwork =
+          typeof media.artwork_data_url === 'string' ? sanitizeUrl(media.artwork_data_url) : '';
+        if (smtcArtwork.startsWith('data:image/')) {
+          // Windows SMTC gives the real artwork; skip the iTunes fallback for this track.
+          const artworkChanged = this.state.music.artworkUrl !== smtcArtwork;
+          this.state.music.artworkUrl = smtcArtwork;
+          this.lastArtworkQuery = songKey;
+          if (artworkChanged || changed) {
+            this.updateLiveWidgetsInPlace(['music']);
+            if (this.state.activePanelItemId) this.renderPopover();
+          }
+        } else if (songKey !== this.lastArtworkQuery) {
           this.lastArtworkQuery = songKey;
           fetchSongMetadata(media.artist, media.title).then((meta) => {
             this.state.music.artworkUrl = meta.artworkUrl;

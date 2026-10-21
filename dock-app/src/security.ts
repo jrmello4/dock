@@ -21,7 +21,8 @@ export function escapeAttr(raw: unknown): string {
 }
 
 /**
- * Allows only safe URLs (`https://`, `http://`, `spotify:`, `ms-settings:`, or `data:image/png;base64,`).
+ * Allows only safe URLs (`https://`, `http://`, `spotify:`, `ms-settings:`, or
+ * `data:image/{png,jpeg,webp,gif};base64,`).
  * Blocks `javascript:`, `data:text/html`, `vbscript:`, `file:`, etc.
  */
 export function sanitizeUrl(raw: unknown): string {
@@ -29,9 +30,8 @@ export function sanitizeUrl(raw: unknown): string {
   const trimmed = raw.trim();
   if (!trimmed) return '';
 
-  if (trimmed.startsWith('data:image/png;base64,')) {
-    const b64Part = trimmed.slice('data:image/png;base64,'.length);
-    return /^[A-Za-z0-9+/=]+$/.test(b64Part) ? trimmed : '';
+  if (/^data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(trimmed)) {
+    return trimmed;
   }
 
   try {
