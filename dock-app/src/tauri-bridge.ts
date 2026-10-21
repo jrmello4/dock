@@ -208,6 +208,55 @@ export async function isAutostartEnabled(): Promise<boolean> {
   }
 }
 
+/** Stores a secret in the OS credential manager (never in localStorage). */
+export async function setSecret(key: string, value: string): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('set_secret', { key, value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function getSecret(key: string): Promise<string> {
+  if (!isTauriRuntime()) return '';
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<string>('get_secret', { key });
+  } catch {
+    return '';
+  }
+}
+
+export async function deleteSecret(key: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('delete_secret', { key });
+  } catch {
+    // Ignore
+  }
+}
+
+export async function hasSecret(key: string): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<boolean>('has_secret', { key });
+  } catch {
+    return false;
+  }
+}
+
+/** Fetches JSON through Rust so custom endpoints do not need CORS headers. */
+export async function fetchApiJson(url: string, token: string): Promise<string> {
+  if (!isTauriRuntime()) throw new Error('Disponível apenas no app desktop.');
+  const { invoke } = await import('@tauri-apps/api/core');
+  return await invoke<string>('fetch_api_json', { url, token });
+}
+
 export async function sendNativeMediaControl(
   action: 'play_pause' | 'next' | 'prev' | 'vol_up' | 'vol_down' | 'vol_mute'
 ): Promise<void> {

@@ -12,7 +12,16 @@ if ($LASTEXITCODE -ne 0) {
     throw "Falha no build (código $LASTEXITCODE)."
 }
 
-$exe = Join-Path $dock 'src-tauri\target\release\leme.exe'
-Write-Host "Iniciando $exe"
-Start-Process -FilePath $exe
-Write-Host 'Pronto. O Leme está rodando com a versão mais recente.'
+$built = Join-Path $dock 'src-tauri\target\release\leme.exe'
+$stableDir = Join-Path $env:LOCALAPPDATA 'Programs\Leme'
+$stable = Join-Path $stableDir 'leme.exe'
+New-Item -ItemType Directory -Force -Path $stableDir | Out-Null
+Copy-Item -Force $built $stable
+Write-Host "Cópia estável: $stable"
+
+# Mantém o autostart apontando para a cópia estável (sobrevive a cargo clean).
+$runKey = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Run'
+& reg add $runKey /v Leme /t REG_SZ /d "`"$stable`"" /f | Out-Null
+
+Start-Process -FilePath $stable
+Write-Host 'Pronto. O Leme está rodando a partir da cópia estável, com a versão mais recente.'

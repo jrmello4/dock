@@ -51,11 +51,15 @@ export function sanitizeDomId(id: unknown, fallback: string): string {
 /**
  * Network helper with AbortController timeout to prevent hanging requests.
  */
-export async function fetchWithTimeout(url: string, timeoutMs = 6500): Promise<Response> {
+export async function fetchWithTimeout(
+  url: string,
+  timeoutMs = 6500,
+  init?: RequestInit
+): Promise<Response> {
   const controller = new AbortController();
   const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { signal: controller.signal });
+    return await fetch(url, { ...init, signal: controller.signal });
   } finally {
     globalThis.clearTimeout(timer);
   }
@@ -425,8 +429,15 @@ export function createDefaultState(): DockState {
       showMusic: true,
       showGithub: true,
       showDaily: true,
+      showApi: false,
       showOverFullscreen: false,
       anchor: null,
+      api: {
+        name: 'API',
+        url: '',
+        valuePath: 'value',
+        labelPath: 'label',
+      },
     },
   };
 }
@@ -481,11 +492,26 @@ function sanitizeHub(raw: unknown, base: HubSettings): HubSettings {
     showMusic: typeof obj.showMusic === 'boolean' ? obj.showMusic : base.showMusic,
     showGithub: typeof obj.showGithub === 'boolean' ? obj.showGithub : base.showGithub,
     showDaily: typeof obj.showDaily === 'boolean' ? obj.showDaily : base.showDaily,
+    showApi: typeof obj.showApi === 'boolean' ? obj.showApi : base.showApi,
     showOverFullscreen:
       typeof obj.showOverFullscreen === 'boolean'
         ? obj.showOverFullscreen
         : base.showOverFullscreen,
     anchor,
+    api: sanitizeHubApi(obj.api, base.api),
+  };
+}
+
+function sanitizeHubApi(raw: unknown, base: HubSettings['api']): HubSettings['api'] {
+  if (!raw || typeof raw !== 'object') return base;
+  const obj = raw as Record<string, unknown>;
+  const str = (value: unknown, max: number): string =>
+    typeof value === 'string' ? value.trim().slice(0, max) : '';
+  return {
+    name: str(obj.name, 40) || base.name,
+    url: str(obj.url, 500),
+    valuePath: str(obj.valuePath, 120) || base.valuePath,
+    labelPath: str(obj.labelPath, 120),
   };
 }
 

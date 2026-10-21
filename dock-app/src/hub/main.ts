@@ -4,26 +4,83 @@ import {
   createInitialState,
   fetchRealGithubData,
   fetchSongMetadata,
+  fetchWithTimeout,
   resetDailyIfNeeded,
   savePersistentState,
 } from '../state';
 import {
   clearHubAnchor,
+  deleteSecret,
+  fetchApiJson,
   fetchNowPlayingLight,
   fetchSystemMetrics,
   focusOrMinimizeWindow,
+  getSecret,
+  hasSecret,
   isAutostartEnabled,
+  launchTarget,
   quitAndRestoreTaskbar,
   reanchorHub,
   setAutostart,
   setHubAnchor,
   setHubHeight,
+  setSecret,
   smtcControl,
 } from '../tauri-bridge';
 import { DockState } from '../types';
 
-type PanelId = 'music' | 'github' | 'daily' | 'settings';
+type PanelId = 'music' | 'github' | 'daily' | 'api' | 'settings';
 type SmtcAction = 'toggle' | 'next' | 'prev' | 'play' | 'pause';
+
+interface GithubItem {
+  id: string;
+  title: string;
+  repo: string;
+  reason: string;
+  url: string;
+}
+
+interface GithubDashboard {
+  unread: number;
+  notifications: GithubItem[];
+  assigned: GithubItem[];
+  reviews: GithubItem[];
+  error: string;
+  loading: boolean;
+}
+
+function emptyGithubDashboard(): GithubDashboard {
+  return {
+    unread: 0,
+    notifications: [],
+    assigned: [],
+    reviews: [],
+    error: '',
+    loading: false,
+  };
+}
+
+function readPath(data: unknown, path: string): unknown {
+  if (!path) return data;
+  return path.split('.').reduce<unknown>((acc, key) => {
+    if (acc && typeof acc === 'object' && key in (acc as Record<string, unknown>)) {
+      return (acc as Record<string, unknown>)[key];
+    }
+    return undefined;
+  }, data);
+}
+
+function formatApiValue(value: unknown): string {
+  if (value === undefined || value === null) return '—';
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value).slice(0, 48);
+    } catch {
+      return '—';
+    }
+  }
+  return String(value).slice(0, 48);
+}
 
 const COLLAPSED_HEIGHT = 76;
 const MAX_PANEL_HEIGHT = 360;
@@ -58,6 +115,13 @@ class LemeHub {
   private mediaBusy = false;
   private forceVisible = false;
   private lastFullscreen = false;
+  private githubTokenConfigured = false;
+  private githubDash: GithubDashboard = emptyGithubDashboard();
+  private apiValue = '—';
+  private apiLabel = '';
+  private apiError = '';
+  private apiLoading = false;
+  private apiTokenConfigured = false;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -80,6 +144,19 @@ class LemeHub {
 
     if (this.state.github.username) {
       void this.refreshGithub(false);
+    }
+
+    void hasSecret('github-token').then((configured) => {
+      this.githubTokenConfigured = configured;
+      if (configured) void this.refreshGithubDashboard();
+    });
+
+    void hasSecret('api-token').then((configured) => {
+      this.apiTokenConfigured = configured;
+    });
+
+    if (this.state.hub.showApi && this.state.hub.api.url) {
+      void this.pollApi();
     }
   }
 
@@ -114,6 +191,7 @@ class LemeHub {
               <b data-gh-total>—</b>
               <span data-gh-label>GitHub</span>
             </div>
+            <span class="gh-badge" data-gh-badge hidden>0</span>
           </div>
 
           <div class="divider" data-div="2"></div>
@@ -122,6 +200,16 @@ class LemeHub {
             <span class="ring" data-ring><b data-daily-count>0/0</b></span>
             <div class="stat">
               <b>Hoje</b>
+            </div>
+          </div>
+
+          <div class="divider" data-div="3"></div>
+
+          <div class="card api" data-open="api" role="button" tabindex="0" aria-label="API">
+            <span class="glyph api-glyph">{ }</span>
+            <div class="stat">
+              <b data-api-value>—</b>
+              <span data-api-name>API</span>
             </div>
           </div>
 
@@ -141,6 +229,28 @@ class LemeHub {
       if (smtc) {
         event.stopPropagation();
         void this.onSmtc(smtc.dataset.smtc as SmtcAction);
+        return;
+      }
+
+      const openUrl = target.closest<HTMLElement>('[data-open-url]');
+      if (openUrl) {
+        const url = sanitizeUrl(openUrl.dataset.openUrl || '');
+        if (url) void launchTarget(url);
+        return;
+      }
+
+      if (target.closest('[data-gh-token-clear]')) {
+        void this.clearGithubToken();
+        return;
+      }
+
+      if (target.closest('[data-refresh-api]')) {
+        void this.pollApi();
+        return;
+      }
+
+      if (target.closest('[data-api-token-clear]')) {
+        void this.clearApiToken();
         return;
       }
 
@@ -169,6 +279,7 @@ class LemeHub {
 
       if (target.closest('[data-refresh-gh]')) {
         void this.refreshGithub(true);
+        void this.refreshGithubDashboard();
         return;
       }
 
@@ -212,11 +323,14 @@ class LemeHub {
       const hubToggle = target.closest<HTMLInputElement>('[data-hub-toggle]');
       if (hubToggle) {
         const key = hubToggle.dataset.hubToggle;
-        if (key === 'showMusic' || key === 'showGithub' || key === 'showDaily') {
+        if (key === 'showMusic' || key === 'showGithub' || key === 'showDaily' || key === 'showApi') {
           this.state.hub[key] = hubToggle.checked;
           savePersistentState(this.state);
           this.renderPill();
           this.renderPanel();
+          if (key === 'showApi' && hubToggle.checked) {
+            void this.pollApi();
+          }
         } else if (key === 'showOverFullscreen') {
           this.state.hub.showOverFullscreen = hubToggle.checked;
           savePersistentState(this.state);
@@ -255,6 +369,19 @@ class LemeHub {
         savePersistentState(this.state);
         this.renderPill();
         void this.refreshGithub(true);
+        return;
+      }
+
+      if (form.matches('[data-gh-token-form]')) {
+        event.preventDefault();
+        const input = form.querySelector<HTMLInputElement>('input[name="token"]');
+        void this.saveGithubToken(input?.value || '');
+        return;
+      }
+
+      if (form.matches('[data-api-form]')) {
+        event.preventDefault();
+        void this.saveApiConfig(form);
       }
     });
 
@@ -280,6 +407,12 @@ class LemeHub {
     window.setInterval(() => this.tickProgress(), 1000);
     window.setInterval(() => void this.pollMetrics(), 2000);
     window.setInterval(() => this.checkDay(), 60_000);
+    window.setInterval(() => {
+      if (this.githubTokenConfigured) void this.refreshGithubDashboard();
+    }, 300_000);
+    window.setInterval(() => {
+      if (this.state.hub.showApi && this.state.hub.api.url) void this.pollApi();
+    }, 60_000);
   }
 
   private applyAppearance(): void {
@@ -292,20 +425,32 @@ class LemeHub {
     const musicCard = this.root.querySelector<HTMLElement>('[data-open="music"]');
     const githubCard = this.root.querySelector<HTMLElement>('[data-open="github"]');
     const dailyCard = this.root.querySelector<HTMLElement>('[data-open="daily"]');
+    const apiCard = this.root.querySelector<HTMLElement>('[data-open="api"]');
     const div1 = this.root.querySelector<HTMLElement>('[data-div="1"]');
     const div2 = this.root.querySelector<HTMLElement>('[data-div="2"]');
+    const div3 = this.root.querySelector<HTMLElement>('[data-div="3"]');
 
     if (musicCard) musicCard.style.display = hub.showMusic ? '' : 'none';
     if (githubCard) githubCard.style.display = hub.showGithub ? '' : 'none';
     if (dailyCard) dailyCard.style.display = hub.showDaily ? '' : 'none';
-    if (div1) div1.style.display = hub.showMusic && (hub.showGithub || hub.showDaily) ? '' : 'none';
-    if (div2) div2.style.display = hub.showGithub && hub.showDaily ? '' : 'none';
+    if (apiCard) apiCard.style.display = hub.showApi ? '' : 'none';
+    if (div1) {
+      div1.style.display =
+        hub.showMusic && (hub.showGithub || hub.showDaily || hub.showApi) ? '' : 'none';
+    }
+    if (div2) {
+      div2.style.display = hub.showGithub && (hub.showDaily || hub.showApi) ? '' : 'none';
+    }
+    if (div3) {
+      div3.style.display = hub.showDaily && hub.showApi ? '' : 'none';
+    }
 
     if (
       this.openPanel &&
       ((this.openPanel === 'music' && !hub.showMusic) ||
         (this.openPanel === 'github' && !hub.showGithub) ||
-        (this.openPanel === 'daily' && !hub.showDaily))
+        (this.openPanel === 'daily' && !hub.showDaily) ||
+        (this.openPanel === 'api' && !hub.showApi))
     ) {
       void this.togglePanel(null);
     }
@@ -313,6 +458,16 @@ class LemeHub {
     const github = this.state.github;
     this.setAll('[data-gh-total]', github.username ? String(github.totalYear) : '—');
     this.setAll('[data-gh-label]', github.username ? 'ano' : 'Conectar GitHub');
+
+    const ghBadge = this.root.querySelector<HTMLElement>('[data-gh-badge]');
+    if (ghBadge) {
+      const unread = this.githubDash.unread;
+      ghBadge.hidden = unread <= 0;
+      ghBadge.textContent = unread > 99 ? '99+' : String(unread);
+    }
+
+    this.setAll('[data-api-value]', this.apiValue || '—');
+    this.setAll('[data-api-name]', this.state.hub.api.name || 'API');
 
     const tasks = this.state.daily.tasks;
     const done = tasks.filter((task) => task.done).length;
@@ -399,6 +554,9 @@ class LemeHub {
     const panelHeight = Math.min(MAX_PANEL_HEIGHT, this.panelEl.scrollHeight);
     await setHubHeight(COLLAPSED_HEIGHT + panelHeight + 6);
     this.panelEl.querySelector<HTMLInputElement>('input')?.focus();
+    if (next === 'github') {
+      void this.refreshGithubDashboard();
+    }
   }
 
   private renderPanel(): void {
@@ -472,6 +630,16 @@ class LemeHub {
             `
             : `<p class="hint">Conecte seu usuário para ver contribuições, repositórios e a última atividade.</p>`
         }
+        <div class="gh-token-block">
+          <div class="gh-list-block"><h5>Token pessoal</h5></div>
+          <form class="gh-form" data-gh-token-form>
+            <input type="password" name="token" placeholder="${this.githubTokenConfigured ? 'Token configurado — cole outro para substituir' : 'ghp_... (para notificações e PRs)'}" autocomplete="off" />
+            <button type="submit" class="btn-ghost">Salvar</button>
+          </form>
+          ${this.githubTokenConfigured ? `<button type="button" class="btn-ghost" data-gh-token-clear>Remover token</button>` : ''}
+          <p class="hint">Guardado no Windows Credential Manager; usado para ler notificações, itens atribuídos e revisões.</p>
+        </div>
+        ${this.renderGithubLists()}
         ${github.loading ? `<p class="hint">Carregando…</p>` : ''}
         ${github.error ? `<p class="error">${escapeHtml(github.error)}</p>` : ''}
       `;
@@ -516,6 +684,35 @@ class LemeHub {
       return;
     }
 
+    if (this.openPanel === 'api') {
+      const cfg = this.state.hub.api;
+      this.panelEl.innerHTML = `
+        <div class="panel-head">
+          <span>${escapeHtml(cfg.name || 'Widget de API')}</span>
+          <div class="head-actions">
+            <button type="button" data-refresh-api>Atualizar</button>
+            <button type="button" data-close-panel aria-label="Fechar">✕</button>
+          </div>
+        </div>
+        <div class="api-hero">
+          <b data-api-hero>${escapeHtml(this.apiValue || '—')}</b>
+          <span data-api-label>${escapeHtml(this.apiLabel)}</span>
+        </div>
+        <p class="error" data-api-error ${this.apiError ? '' : 'hidden'}>${escapeHtml(this.apiError)}</p>
+        <form class="api-form" data-api-form>
+          <input name="name" placeholder="Nome do widget" value="${escapeHtml(cfg.name)}" maxlength="40" />
+          <input name="url" placeholder="https://api.exemplo.com/status" value="${escapeHtml(cfg.url)}" maxlength="500" />
+          <input name="valuePath" placeholder="Caminho do valor (ex.: data.count)" value="${escapeHtml(cfg.valuePath)}" maxlength="120" />
+          <input name="labelPath" placeholder="Caminho do rótulo (opcional)" value="${escapeHtml(cfg.labelPath)}" maxlength="120" />
+          <input type="password" name="token" placeholder="${this.apiTokenConfigured ? 'Token configurado — cole outro para substituir' : 'Token (opcional)'}" autocomplete="off" />
+          <button type="submit" class="btn-solid">Salvar e atualizar</button>
+        </form>
+        ${this.apiTokenConfigured ? '<button type="button" class="btn-ghost" data-api-token-clear>Remover token</button>' : ''}
+        <p class="hint">Busca feita pelo Rust (sem CORS). O token fica no Windows Credential Manager.</p>
+      `;
+      return;
+    }
+
     const hub = this.state.hub;
     this.panelEl.innerHTML = `
       <div class="panel-head">
@@ -536,6 +733,7 @@ class LemeHub {
       ${this.toggleRow('showMusic', 'Música', hub.showMusic)}
       ${this.toggleRow('showGithub', 'GitHub', hub.showGithub)}
       ${this.toggleRow('showDaily', 'Tarefas', hub.showDaily)}
+      ${this.toggleRow('showApi', 'Widget de API', hub.showApi)}
       ${this.toggleRow('showOverFullscreen', 'Mostrar sobre tela cheia', hub.showOverFullscreen)}
       <div class="setting-row">
         <label>Iniciar com o Windows</label>
@@ -574,6 +772,262 @@ class LemeHub {
         return `<i data-level="${level}" title="${value} contribuições"></i>`;
       })
       .join('');
+  }
+
+  private renderGithubLists(): string {
+    if (!this.githubTokenConfigured) {
+      return `<p class="hint">Conecte um token para ver notificações, itens atribuídos e revisões pendentes.</p>`;
+    }
+    if (this.githubDash.loading) return `<p class="hint">Carregando notificações…</p>`;
+    if (this.githubDash.error) return `<p class="error">${escapeHtml(this.githubDash.error)}</p>`;
+
+    const block = (title: string, items: GithubItem[]): string => {
+      if (!items.length) return '';
+      const rows = items
+        .map(
+          (item) => `
+            <button type="button" class="gh-item" data-open-url="${escapeHtml(item.url)}" title="${escapeHtml(item.title)}">
+              <b>${escapeHtml(item.title)}</b>
+              <span>${escapeHtml(item.repo)}${item.reason ? ` · ${escapeHtml(item.reason)}` : ''}</span>
+            </button>`
+        )
+        .join('');
+      return `<div class="gh-list-block"><h5>${escapeHtml(title)}</h5>${rows}</div>`;
+    };
+
+    const html = [
+      block(`Notificações (${this.githubDash.unread})`, this.githubDash.notifications),
+      block(`Atribuídos (${this.githubDash.assigned.length})`, this.githubDash.assigned),
+      block(`Revisões (${this.githubDash.reviews.length})`, this.githubDash.reviews),
+    ].join('');
+
+    return html || `<p class="hint">Nada pendente por aqui. 🎉</p>`;
+  }
+
+  private apiUrlToHtml(url: string): string {
+    if (!url) return '';
+    return sanitizeUrl(url.replace('https://api.github.com/', 'https://github.com/'));
+  }
+
+  private async refreshGithubDashboard(): Promise<void> {
+    if (!this.githubTokenConfigured) {
+      this.githubTokenConfigured = await hasSecret('github-token');
+      if (!this.githubTokenConfigured) return;
+    }
+
+    this.githubDash.loading = true;
+    this.githubDash.error = '';
+    if (this.openPanel === 'github') this.renderPanel();
+
+    try {
+      const token = await getSecret('github-token');
+      if (!token) throw new Error('Token não encontrado.');
+
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      };
+
+      const results = await Promise.allSettled([
+        fetchWithTimeout('https://api.github.com/notifications?all=false&per_page=20', 9000, {
+          headers,
+        }),
+        fetchWithTimeout('https://api.github.com/issues?filter=assigned&state=open&per_page=10', 9000, {
+          headers,
+        }),
+        fetchWithTimeout(
+          'https://api.github.com/search/issues?q=is%3Aopen+is%3Apr+review-requested%3A%40me&per_page=10',
+          9000,
+          { headers }
+        ),
+      ]);
+
+      const notificationsRes = results[0];
+      if (notificationsRes.status === 'rejected') throw notificationsRes.reason;
+      if (!notificationsRes.value.ok) {
+        if (notificationsRes.value.status === 401) throw new Error('Token inválido ou expirado.');
+        if (notificationsRes.value.status === 403) {
+          throw new Error('Limite da API do GitHub atingido. Tente novamente em alguns minutos.');
+        }
+        throw new Error(`GitHub respondeu HTTP ${notificationsRes.value.status}.`);
+      }
+
+      const text = (value: unknown): string => (typeof value === 'string' ? value : '');
+
+      const notificationsJson = (await notificationsRes.value.json()) as Array<
+        Record<string, unknown>
+      >;
+      const notifications: GithubItem[] = notificationsJson.map((item) => {
+        const subject = (item.subject ?? {}) as Record<string, unknown>;
+        const repository = (item.repository ?? {}) as Record<string, unknown>;
+        return {
+          id: String(item.id ?? ''),
+          title: text(subject.title) || '(sem título)',
+          repo: text(repository.full_name),
+          reason: text(item.reason),
+          url: this.apiUrlToHtml(text(subject.url) || text(repository.html_url)),
+        };
+      });
+
+      const assignedRes = results[1];
+      const assignedJson =
+        assignedRes.status === 'fulfilled' && assignedRes.value.ok
+          ? ((await assignedRes.value.json()) as Array<Record<string, unknown>>)
+          : [];
+      const assigned: GithubItem[] = assignedJson.map((issue) => ({
+        id: String(issue.id ?? ''),
+        title: text(issue.title) || '(sem título)',
+        repo: text(issue.repository_url).replace('https://api.github.com/repos/', ''),
+        reason: issue.pull_request ? 'pull request' : 'issue',
+        url: this.apiUrlToHtml(text(issue.html_url)),
+      }));
+
+      const reviewsRes = results[2];
+      const reviewsPayload =
+        reviewsRes.status === 'fulfilled' && reviewsRes.value.ok
+          ? ((await reviewsRes.value.json()) as Record<string, unknown>)
+          : {};
+      const reviewsItems = Array.isArray(reviewsPayload.items)
+        ? (reviewsPayload.items as Array<Record<string, unknown>>)
+        : [];
+      const reviews: GithubItem[] = reviewsItems.map((issue) => ({
+        id: String(issue.id ?? ''),
+        title: text(issue.title) || '(sem título)',
+        repo: text(issue.repository_url).replace('https://api.github.com/repos/', ''),
+        reason: 'revisão',
+        url: this.apiUrlToHtml(text(issue.html_url)),
+      }));
+
+      this.githubDash = {
+        unread: notifications.length,
+        notifications,
+        assigned,
+        reviews,
+        error: '',
+        loading: false,
+      };
+    } catch (error) {
+      this.githubDash = {
+        ...emptyGithubDashboard(),
+        error: error instanceof Error ? error.message : 'Falha ao consultar o GitHub.',
+      };
+    } finally {
+      this.githubDash.loading = false;
+      this.renderPill();
+      if (this.openPanel === 'github') {
+        const focused = document.activeElement;
+        const typing = focused instanceof HTMLInputElement && this.panelEl.contains(focused);
+        if (!typing) this.renderPanel();
+      }
+    }
+  }
+
+  private async saveGithubToken(token: string): Promise<void> {
+    const clean = token.trim();
+    if (!clean) return;
+
+    const ok = await setSecret('github-token', clean);
+    if (!ok) {
+      this.githubDash.error = 'Não foi possível salvar o token no Credential Manager.';
+      this.renderPanel();
+      return;
+    }
+
+    this.githubTokenConfigured = true;
+    this.githubDash = { ...emptyGithubDashboard(), loading: true };
+    this.renderPanel();
+    await this.refreshGithubDashboard();
+  }
+
+  private async clearGithubToken(): Promise<void> {
+    await deleteSecret('github-token');
+    this.githubTokenConfigured = false;
+    this.githubDash = emptyGithubDashboard();
+    this.renderPill();
+    this.renderPanel();
+  }
+
+  private async saveApiConfig(form: HTMLFormElement): Promise<void> {
+    const data = new FormData(form);
+    const field = (name: string, max: number): string =>
+      String(data.get(name) || '')
+        .trim()
+        .slice(0, max);
+
+    this.state.hub.api = {
+      name: field('name', 40) || 'API',
+      url: field('url', 500),
+      valuePath: field('valuePath', 120) || 'value',
+      labelPath: field('labelPath', 120),
+    };
+    savePersistentState(this.state);
+
+    const token = String(data.get('token') || '').trim();
+    if (token) {
+      this.apiTokenConfigured = await setSecret('api-token', token);
+    }
+
+    this.renderPill();
+    this.renderPanel();
+    await this.pollApi();
+  }
+
+  private async clearApiToken(): Promise<void> {
+    await deleteSecret('api-token');
+    this.apiTokenConfigured = false;
+    this.renderPanel();
+  }
+
+  private async pollApi(): Promise<void> {
+    const config = this.state.hub.api;
+    if (!this.state.hub.showApi || !config.url) {
+      this.apiValue = '—';
+      this.apiLabel = '';
+      this.apiError = '';
+      this.updateApiVisuals();
+      return;
+    }
+
+    this.apiLoading = true;
+    this.apiError = '';
+    this.updateApiVisuals();
+
+    try {
+      const token = await getSecret('api-token');
+      const body = await fetchApiJson(config.url, token);
+      const data = JSON.parse(body) as unknown;
+      this.apiValue = formatApiValue(readPath(data, config.valuePath));
+      this.apiLabel = config.labelPath ? formatApiValue(readPath(data, config.labelPath)) : '';
+    } catch (error) {
+      this.apiValue = '—';
+      this.apiLabel = '';
+      this.apiError = error instanceof Error ? error.message : 'Falha ao consultar a API.';
+    } finally {
+      this.apiLoading = false;
+      this.updateApiVisuals();
+      this.renderApiPanelIfOpen();
+    }
+  }
+
+  private updateApiVisuals(): void {
+    const value = this.apiLoading ? '…' : this.apiValue || '—';
+    this.setAll('[data-api-value]', value);
+    this.setAll('[data-api-name]', this.state.hub.api.name || 'API');
+    this.setAll('[data-api-hero]', value);
+    this.setAll('[data-api-label]', this.apiLabel || '');
+    const error = this.root.querySelector<HTMLElement>('[data-api-error]');
+    if (error) {
+      error.textContent = this.apiError;
+      error.hidden = !this.apiError;
+    }
+  }
+
+  private renderApiPanelIfOpen(): void {
+    if (this.openPanel !== 'api') return;
+    const focused = document.activeElement;
+    if (focused instanceof HTMLInputElement && this.panelEl.contains(focused)) return;
+    this.renderPanel();
   }
 
   private async pollMedia(): Promise<void> {

@@ -2221,6 +2221,73 @@ fn is_autostart_enabled() -> bool {
     autostart_registry_enabled()
 }
 
+const SECRET_SERVICE: &str = "leme";
+
+fn secret_entry(key: &str) -> Result<keyring::Entry, String> {
+    if key.is_empty()
+        || key.len() > 64
+        || !key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("Chave de segredo inválida".to_string());
+    }
+    keyring::Entry::new(SECRET_SERVICE, key).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn set_secret(key: String, value: String) -> Result<(), String> {
+    let entry = secret_entry(&key)?;
+    let value = value.trim();
+    if value.is_empty() {
+        let _ = entry.delete_credential();
+        Ok(())
+    } else {
+        entry.set_password(value).map_err(|error| error.to_string())
+    }
+}
+
+#[tauri::command]
+fn get_secret(key: String) -> Result<String, String> {
+    secret_entry(&key)?
+        .get_password()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn delete_secret(key: String) -> Result<(), String> {
+    secret_entry(&key)?
+        .delete_credential()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn has_secret(key: String) -> bool {
+    secret_entry(&key)
+        .and_then(|entry| entry.get_password().map_err(|error| error.to_string()))
+        .is_ok()
+}
+
+/// Fetches JSON from a user-configured endpoint through Rust (no browser CORS restrictions).
+#[tauri::command]
+fn fetch_api_json(url: String, token: String) -> Result<String, String> {
+    let url = url.trim();
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("URL inválida: use http:// ou https://".to_string());
+    }
+
+    let mut request = ureq::get(url)
+        .timeout(std::time::Duration::from_secs(10))
+        .set("Accept", "application/json");
+    let token = token.trim();
+    if !token.is_empty() {
+        request = request.set("Authorization", &format!("Bearer {token}"));
+    }
+
+    let response = request.call().map_err(|error| error.to_string())?;
+    response.into_string().map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 fn send_media_control(action: String) {
     #[cfg(target_os = "windows")]
@@ -2382,7 +2449,7 @@ fn launch_target(target: String) -> Result<(), String> {
     }
 }
 
-const HUB_WIDTH_LOGICAL: f64 = 520.0;
+const HUB_WIDTH_LOGICAL: f64 = 620.0;
 const HUB_COLLAPSED_HEIGHT: f64 = 76.0;
 static HUB_HEIGHT_X100: AtomicI32 = AtomicI32::new(7600);
 static HUB_ANCHOR: OnceLock<Mutex<Option<(i32, i32)>>> = OnceLock::new();
@@ -2757,6 +2824,11 @@ fn main() {
             reanchor_hub,
             set_autostart,
             is_autostart_enabled,
+            set_secret,
+            get_secret,
+            delete_secret,
+            has_secret,
+            fetch_api_json,
             send_media_control,
             focus_or_minimize_window,
             control_window,

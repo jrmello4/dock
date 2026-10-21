@@ -145,14 +145,23 @@ export interface HubAnchor {
   bottom: number;
 }
 
+export interface HubApiConfig {
+  name: string;
+  url: string;
+  valuePath: string;
+  labelPath: string;
+}
+
 export interface HubSettings {
   theme: 'dark' | 'light';
   opacity: number;
   showMusic: boolean;
   showGithub: boolean;
   showDaily: boolean;
+  showApi: boolean;
   showOverFullscreen: boolean;
   anchor: HubAnchor | null;
+  api: HubApiConfig;
 }
 
 export interface DockState {
