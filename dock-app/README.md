@@ -5,10 +5,11 @@ Companion de widgets para o canto da barra do Windows, construído com **Tauri v
 ## Widgets
 
 - **Now Playing (Windows SMTC):** capa, título, artista, progresso e controles reais (play/pause, anterior, próxima) na sessão ativa do player.
-- **GitHub:** contribuições no ano, repositórios públicos e última atividade.
+- **GitHub:** contribuições no ano, repositórios públicos e última atividade. Com um token pessoal, mostra também notificações não lidas, itens atribuídos e revisões solicitadas.
 - **Diário:** checklist de tarefas recorrentes, com reset automático todo dia.
+- **Widget de API:** card configurável (nome, URL, caminho do valor/rótulo e token) buscado pelo Rust — sem CORS, serve para status de deploy, chamados ou qualquer endpoint JSON.
 
-Clique em um card para abrir o painel; `Esc` ou o `✕` fecham. O Leme se esconde sozinho quando um app está em tela cheia.
+Clique em um card para abrir o painel; `Esc` ou o `✕` fecham. O Leme se esconde sozinho quando um app está em tela cheia (ou fica por cima, se você ativar essa opção).
 
 ## Personalização
 
@@ -17,6 +18,24 @@ Clique em um card para abrir o painel; `Esc` ou o `✕` fecham. O Leme se escond
 - Arraste pela alça `⠿` para reposicionar; "Reposicionar no canto" volta ao padrão.
 - A pílula fica ancorada acima da barra de tarefas e cresce para cima quando um painel abre.
 - Ícone na bandeja: clique esquerdo mostra/oculta o Leme, clique direito abre o menu.
+
+## Tokens e segredos
+
+Tokens do GitHub e de APIs personalizadas ficam no **Windows Credential Manager** (nunca no
+`localStorage`). Conecte-os pelos próprios painéis; o de GitHub precisa de leitura de notificações
+e pull requests.
+
+## Atualizações
+
+- Releases assinados são publicados em [github.com/jrmello4/dock/releases](https://github.com/jrmello4/dock/releases).
+- Em **Configurações → Atualizações** dá para verificar/instalar; a opção automática consulta no
+  início e a cada 6 horas.
+- Para desenvolvimento, `run-latest.cmd` compila, atualiza a cópia em
+  `%LOCALAPPDATA%\Programs\Leme` e reinicia o app.
+
+## Licença
+
+MIT — veja [LICENSE](LICENSE) e o [CHANGELOG](CHANGELOG.md).
 
 ## Como executar
 

@@ -1,6 +1,6 @@
 {
   "name": "leme",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Dock ultraleve com ambientes, widgets ao vivo, temas e mascote em Tauri v2 + Vanilla TypeScript",
   "type": "module",

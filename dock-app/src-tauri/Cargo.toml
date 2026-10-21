@@ -1,6 +1,6 @@
 [package]
 name = "leme"
-version = "0.1.1"
+version = "0.1.2"
 description = "Leme Desktop - Ultraleve em Tauri v2 + Rust"
 authors = ["Leme"]
 edition = "2021"

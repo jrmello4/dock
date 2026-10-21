@@ -15,7 +15,6 @@ import {
   fetchApiJson,
   fetchNowPlayingLight,
   fetchSystemMetrics,
-  focusOrMinimizeWindow,
   getSecret,
   hasSecret,
   isAutostartEnabled,
@@ -298,11 +297,6 @@ class LemeHub {
       if (target.closest('[data-refresh-gh]')) {
         void this.refreshGithub(true);
         void this.refreshGithubDashboard();
-        return;
-      }
-
-      if (target.closest('[data-open-player]')) {
-        void this.openPlayer();
         return;
       }
 
@@ -591,7 +585,6 @@ class LemeHub {
         <div class="panel-head">
           <span>Reproduzindo agora</span>
           <div class="head-actions">
-            <button type="button" data-open-player>Abrir player</button>
             <button type="button" data-close-panel aria-label="Fechar">✕</button>
           </div>
         </div>
@@ -1260,12 +1253,6 @@ class LemeHub {
     }
     this.updateMusicVisuals();
     await smtcControl(action);
-  }
-
-  private async openPlayer(): Promise<void> {
-    if (this.state.music.hwnd > 0) {
-      await focusOrMinimizeWindow(this.state.music.hwnd);
-    }
   }
 
   private setTheme(theme: 'dark' | 'light'): void {
