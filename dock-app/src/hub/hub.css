@@ -87,6 +87,29 @@ body {
   -webkit-backdrop-filter: blur(20px) saturate(1.25);
 }
 
+.grip {
+  width: 18px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 15px;
+  letter-spacing: -2px;
+  cursor: grab;
+  user-select: none;
+}
+
+.grip:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.grip:active {
+  cursor: grabbing;
+}
+
 .card {
   position: relative;
   display: flex;

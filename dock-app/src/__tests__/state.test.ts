@@ -109,6 +109,29 @@ describe('state.ts — Schema validation, migration & DOM ID sanitization', () =
     expect(migrated.hub.showMusic).toBe(false);
     expect(migrated.hub.showDaily).toBe(false);
     expect(migrated.hub.showGithub).toBe(true);
+    expect(migrated.hub.showOverFullscreen).toBe(false);
+    expect(migrated.hub.anchor).toBeNull();
+  });
+
+  it('sanitizes a persisted hub anchor', () => {
+    const base = createDefaultState();
+    const migrated = validateAndMigrateSavedState(
+      {
+        version: 2,
+        hub: {
+          anchor: { x: 120.6, bottom: 640.2 },
+          showOverFullscreen: true,
+        },
+      },
+      base
+    );
+
+    expect(migrated.hub.anchor).toEqual({ x: 121, bottom: 640 });
+    expect(migrated.hub.showOverFullscreen).toBe(true);
+    expect(
+      validateAndMigrateSavedState({ version: 2, hub: { anchor: { x: 'bad', bottom: 1 } } }, base)
+        .hub.anchor
+    ).toBeNull();
   });
 
   it('resets the checklist in place only when the day actually changed', () => {

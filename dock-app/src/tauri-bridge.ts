@@ -154,6 +154,60 @@ export async function setHubHeight(height: number): Promise<void> {
   }
 }
 
+/** Pins the hub to a custom physical position (x + bottom edge). */
+export async function setHubAnchor(x: number, bottom: number): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('set_hub_anchor', { x, bottom });
+  } catch {
+    // Ignore
+  }
+}
+
+/** Removes the custom position and snaps back to the bottom-right corner. */
+export async function clearHubAnchor(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('clear_hub_anchor');
+  } catch {
+    // Ignore
+  }
+}
+
+/** Re-applies the current position/size after the taskbar work area changes. */
+export async function reanchorHub(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('reanchor_hub');
+  } catch {
+    // Ignore
+  }
+}
+
+export async function setAutostart(enabled: boolean): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('set_autostart', { enabled });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function isAutostartEnabled(): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<boolean>('is_autostart_enabled');
+  } catch {
+    return false;
+  }
+}
+
 export async function sendNativeMediaControl(
   action: 'play_pause' | 'next' | 'prev' | 'vol_up' | 'vol_down' | 'vol_mute'
 ): Promise<void> {

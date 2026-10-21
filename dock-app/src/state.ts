@@ -425,6 +425,8 @@ export function createDefaultState(): DockState {
       showMusic: true,
       showGithub: true,
       showDaily: true,
+      showOverFullscreen: false,
+      anchor: null,
     },
   };
 }
@@ -463,12 +465,27 @@ function sanitizeHub(raw: unknown, base: HubSettings): HubSettings {
   if (!raw || typeof raw !== 'object') return base;
   const obj = raw as Record<string, unknown>;
   const rawOpacity = Number(obj.opacity);
+  const rawAnchor = obj.anchor;
+  let anchor: HubSettings['anchor'] = null;
+  if (rawAnchor && typeof rawAnchor === 'object') {
+    const candidate = rawAnchor as Record<string, unknown>;
+    const x = Number(candidate.x);
+    const bottom = Number(candidate.bottom);
+    if (Number.isFinite(x) && Number.isFinite(bottom)) {
+      anchor = { x: Math.round(x), bottom: Math.round(bottom) };
+    }
+  }
   return {
     theme: obj.theme === 'light' ? 'light' : obj.theme === 'dark' ? 'dark' : base.theme,
     opacity: Number.isFinite(rawOpacity) ? Math.max(0.6, Math.min(1, rawOpacity)) : base.opacity,
     showMusic: typeof obj.showMusic === 'boolean' ? obj.showMusic : base.showMusic,
     showGithub: typeof obj.showGithub === 'boolean' ? obj.showGithub : base.showGithub,
     showDaily: typeof obj.showDaily === 'boolean' ? obj.showDaily : base.showDaily,
+    showOverFullscreen:
+      typeof obj.showOverFullscreen === 'boolean'
+        ? obj.showOverFullscreen
+        : base.showOverFullscreen,
+    anchor,
   };
 }
 

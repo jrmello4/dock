@@ -3,12 +3,13 @@
 use serde::{Deserialize, Serialize};
 use std::sync::{
     atomic::{AtomicBool, AtomicI32, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
 };
 use std::time::Duration;
 use sysinfo::System;
 use tauri::{
-    Manager, PhysicalPosition, PhysicalSize, Position, Size, State, WebviewWindow, WindowEvent,
+    Emitter, Manager, PhysicalPosition, PhysicalSize, Position, Size, State, WebviewWindow,
+    WindowEvent,
 };
 
 #[allow(dead_code)]
@@ -2186,6 +2187,41 @@ fn set_hub_height(window: tauri::Window, height: f64) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn set_hub_anchor(window: WebviewWindow, x: i32, bottom: i32) -> Result<(), String> {
+    if let Ok(mut slot) = hub_anchor().lock() {
+        *slot = Some((x, bottom));
+    }
+    let height = HUB_HEIGHT_X100.load(Ordering::SeqCst) as f64 / 100.0;
+    position_hub(&window, height).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn clear_hub_anchor(window: WebviewWindow) -> Result<(), String> {
+    if let Ok(mut slot) = hub_anchor().lock() {
+        *slot = None;
+    }
+    let height = HUB_HEIGHT_X100.load(Ordering::SeqCst) as f64 / 100.0;
+    position_hub(&window, height).map_err(|error| error.to_string())
+}
+
+/// Re-applies the current anchor/size (used when the taskbar appears/disappears).
+#[tauri::command]
+fn reanchor_hub(window: WebviewWindow) -> Result<(), String> {
+    let height = HUB_HEIGHT_X100.load(Ordering::SeqCst) as f64 / 100.0;
+    position_hub(&window, height).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn set_autostart(enabled: bool) -> Result<(), String> {
+    set_autostart_registry(enabled)
+}
+
+#[tauri::command]
+fn is_autostart_enabled() -> bool {
+    autostart_registry_enabled()
+}
+
+#[tauri::command]
 fn send_media_control(action: String) {
     #[cfg(target_os = "windows")]
     {
@@ -2349,6 +2385,12 @@ fn launch_target(target: String) -> Result<(), String> {
 const HUB_WIDTH_LOGICAL: f64 = 520.0;
 const HUB_COLLAPSED_HEIGHT: f64 = 76.0;
 static HUB_HEIGHT_X100: AtomicI32 = AtomicI32::new(7600);
+static HUB_ANCHOR: OnceLock<Mutex<Option<(i32, i32)>>> = OnceLock::new();
+static TRAY_ICON: OnceLock<tauri::tray::TrayIcon> = OnceLock::new();
+
+fn hub_anchor() -> &'static Mutex<Option<(i32, i32)>> {
+    HUB_ANCHOR.get_or_init(|| Mutex::new(None))
+}
 
 /// Minimal window surface shared by `Window` (event callbacks) and `WebviewWindow` (commands/setup).
 trait HubWindowOps {
@@ -2414,13 +2456,147 @@ fn position_hub<W: HubWindowOps + ?Sized>(window: &W, height_logical: f64) -> ta
 
     #[cfg(target_os = "windows")]
     {
-        let work = win32::get_window_work_area(window.hub_hwnd());
-        let margin = (10.0 * scale).round() as i32;
-        let x = (work.right - width_px as i32 - margin).max(work.left + margin);
-        let y = (work.bottom - height_px as i32 - margin).max(work.top + margin);
-        window.hub_move(x, y)?;
+        let anchor = hub_anchor().lock().ok().and_then(|slot| *slot);
+        if let Some((x, bottom)) = anchor {
+            let y = (bottom - height_px as i32).max(0);
+            window.hub_move(x.max(0), y)?;
+        } else {
+            let work = win32::get_window_work_area(window.hub_hwnd());
+            let margin = (10.0 * scale).round() as i32;
+            let x = (work.right - width_px as i32 - margin).max(work.left + margin);
+            let y = (work.bottom - height_px as i32 - margin).max(work.top + margin);
+            window.hub_move(x, y)?;
+        }
     }
     Ok(())
+}
+
+/// Creates the tray icon: left click toggles the hub, right click opens the menu.
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let toggle = MenuItem::with_id(app, "toggle", "Mostrar/ocultar Leme", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "Configurações", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Sair do Leme", true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(app, &[&toggle, &settings, &separator, &quit])?;
+
+    let mut builder = TrayIconBuilder::new()
+        .tooltip("Leme")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "toggle" => toggle_hub_window(app),
+            "settings" => {
+                show_hub_window(app);
+                let _ = app.emit("leme:open-settings", ());
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                toggle_hub_window(tray.app_handle());
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+
+    let tray = builder.build(app)?;
+    let _ = TRAY_ICON.set(tray);
+    Ok(())
+}
+
+fn show_hub_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn toggle_hub_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        match window.is_visible() {
+            Ok(true) => {
+                let _ = window.hide();
+            }
+            _ => show_hub_window(app),
+        }
+    }
+}
+
+const AUTOSTART_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+const AUTOSTART_NAME: &str = "Leme";
+
+fn set_autostart_registry(enabled: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+        if enabled {
+            let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+            let value = format!("\"{}\"", exe.display());
+            let status = std::process::Command::new("reg")
+                .args([
+                    "add",
+                    AUTOSTART_KEY,
+                    "/v",
+                    AUTOSTART_NAME,
+                    "/t",
+                    "REG_SZ",
+                    "/d",
+                    &value,
+                    "/f",
+                ])
+                .creation_flags(CREATE_NO_WINDOW)
+                .status()
+                .map_err(|error| error.to_string())?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("reg add falhou (código {status})"))
+            }
+        } else {
+            // Best effort: removing a value that does not exist is not an error for the UI.
+            let _ = std::process::Command::new("reg")
+                .args(["delete", AUTOSTART_KEY, "/v", AUTOSTART_NAME, "/f"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .status();
+            Ok(())
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = enabled;
+        Err("Autostart é suportado apenas no Windows".to_string())
+    }
+}
+
+fn autostart_registry_enabled() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        std::process::Command::new("reg")
+            .args(["query", AUTOSTART_KEY, "/v", AUTOSTART_NAME])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
 }
 
 fn main() {
@@ -2556,6 +2732,7 @@ fn main() {
                     });
                 }
             }
+            setup_tray(app)?;
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -2575,6 +2752,11 @@ fn main() {
             get_now_playing_light,
             smtc_control,
             set_hub_height,
+            set_hub_anchor,
+            clear_hub_anchor,
+            reanchor_hub,
+            set_autostart,
+            is_autostart_enabled,
             send_media_control,
             focus_or_minimize_window,
             control_window,

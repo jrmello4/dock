@@ -8,10 +8,15 @@ import {
   savePersistentState,
 } from '../state';
 import {
+  clearHubAnchor,
   fetchNowPlayingLight,
   fetchSystemMetrics,
   focusOrMinimizeWindow,
+  isAutostartEnabled,
   quitAndRestoreTaskbar,
+  reanchorHub,
+  setAutostart,
+  setHubAnchor,
   setHubHeight,
   smtcControl,
 } from '../tauri-bridge';
@@ -51,6 +56,7 @@ class LemeHub {
   private openPanel: PanelId | null = null;
   private lastArtworkQuery = '';
   private mediaBusy = false;
+  private forceVisible = false;
   private lastFullscreen = false;
 
   constructor(root: HTMLElement) {
@@ -65,6 +71,12 @@ class LemeHub {
     this.applyAppearance();
     this.renderPill();
     this.startLoops();
+    this.listenTrayEvents();
+
+    const anchor = this.state.hub.anchor;
+    if (anchor) {
+      void setHubAnchor(anchor.x, anchor.bottom);
+    }
 
     if (this.state.github.username) {
       void this.refreshGithub(false);
@@ -76,6 +88,7 @@ class LemeHub {
       <div class="hub" data-hub>
         <section class="panel" data-panel hidden></section>
         <div class="pill">
+          <div class="grip" data-drag title="Arrastar o Leme">⠿</div>
           <div class="card music" data-open="music" role="button" tabindex="0" aria-label="Música">
             <div class="art-wrap" data-art-wrap>
               <img data-art alt="" hidden />
@@ -164,8 +177,20 @@ class LemeHub {
         return;
       }
 
+      if (target.closest('[data-reset-position]')) {
+        void this.resetPosition();
+        return;
+      }
+
       if (target.closest('[data-quit]')) {
         void quitAndRestoreTaskbar();
+      }
+    });
+
+    this.root.addEventListener('pointerdown', (event) => {
+      if ((event.target as HTMLElement).closest('[data-drag]')) {
+        event.preventDefault();
+        void this.beginDrag();
       }
     });
 
@@ -178,13 +203,24 @@ class LemeHub {
         return;
       }
 
+      const autostart = target.closest<HTMLInputElement>('[data-autostart]');
+      if (autostart) {
+        void this.onAutostartToggle(autostart.checked);
+        return;
+      }
+
       const hubToggle = target.closest<HTMLInputElement>('[data-hub-toggle]');
       if (hubToggle) {
-        const key = hubToggle.dataset.hubToggle as 'showMusic' | 'showGithub' | 'showDaily';
+        const key = hubToggle.dataset.hubToggle;
         if (key === 'showMusic' || key === 'showGithub' || key === 'showDaily') {
           this.state.hub[key] = hubToggle.checked;
           savePersistentState(this.state);
           this.renderPill();
+          this.renderPanel();
+        } else if (key === 'showOverFullscreen') {
+          this.state.hub.showOverFullscreen = hubToggle.checked;
+          savePersistentState(this.state);
+          this.applyFullscreenVisibility(this.state.metrics.fullscreenActive);
           this.renderPanel();
         }
       }
@@ -348,9 +384,11 @@ class LemeHub {
     this.openPanel = next;
 
     if (!next) {
+      this.forceVisible = false;
       this.panelEl.hidden = true;
       this.panelEl.innerHTML = '';
       await setHubHeight(COLLAPSED_HEIGHT);
+      this.applyFullscreenVisibility(this.state.metrics.fullscreenActive);
       return;
     }
 
@@ -498,9 +536,24 @@ class LemeHub {
       ${this.toggleRow('showMusic', 'Música', hub.showMusic)}
       ${this.toggleRow('showGithub', 'GitHub', hub.showGithub)}
       ${this.toggleRow('showDaily', 'Tarefas', hub.showDaily)}
+      ${this.toggleRow('showOverFullscreen', 'Mostrar sobre tela cheia', hub.showOverFullscreen)}
+      <div class="setting-row">
+        <label>Iniciar com o Windows</label>
+        <input type="checkbox" data-autostart />
+      </div>
+      <div class="setting-row">
+        <label>Posição</label>
+        <button type="button" class="btn-ghost" data-reset-position>Reposicionar no canto</button>
+      </div>
+      <p class="hint">Arraste pela alça ⠿ à esquerda da pílula para mover o Leme.</p>
       <button type="button" class="danger" data-quit>Sair do Leme</button>
       <p class="version">Leme 0.1.0 · a barra do Windows fica intacta</p>
     `;
+
+    void isAutostartEnabled().then((enabled) => {
+      const input = this.panelEl.querySelector<HTMLInputElement>('[data-autostart]');
+      if (input) input.checked = enabled;
+    });
   }
 
   private toggleRow(key: string, label: string, checked: boolean): string {
@@ -595,20 +648,71 @@ class LemeHub {
 
   private async pollMetrics(): Promise<void> {
     this.state.metrics = await fetchSystemMetrics(this.state.metrics);
-    const fullscreen = this.state.metrics.fullscreenActive;
-    if (fullscreen === this.lastFullscreen) return;
-    this.lastFullscreen = fullscreen;
+    this.applyFullscreenVisibility(this.state.metrics.fullscreenActive);
+  }
 
-    if (fullscreen) {
-      if (this.openPanel) {
-        this.openPanel = null;
-        this.panelEl.hidden = true;
-        this.panelEl.innerHTML = '';
-        void setHubHeight(COLLAPSED_HEIGHT);
-      }
-      this.hubEl.classList.add('is-hidden');
-    } else {
-      this.hubEl.classList.remove('is-hidden');
+  private applyFullscreenVisibility(fullscreen: boolean): void {
+    if (fullscreen !== this.lastFullscreen) {
+      this.lastFullscreen = fullscreen;
+      // The shell changes the work area when a fullscreen app hides the taskbar; keep the
+      // default anchor glued to the right corner when that happens.
+      void reanchorHub();
+    }
+
+    const shouldHide = fullscreen && !this.state.hub.showOverFullscreen && !this.forceVisible;
+    this.hubEl.classList.toggle('is-hidden', shouldHide);
+
+    if (shouldHide && this.openPanel) {
+      this.openPanel = null;
+      this.panelEl.hidden = true;
+      this.panelEl.innerHTML = '';
+      void setHubHeight(COLLAPSED_HEIGHT);
+    }
+  }
+
+  private listenTrayEvents(): void {
+    void import('@tauri-apps/api/event')
+      .then(({ listen }) =>
+        listen('leme:open-settings', () => {
+          this.forceVisible = true;
+          this.hubEl.classList.remove('is-hidden');
+          void this.togglePanel('settings');
+        })
+      )
+      .catch(() => {
+        // Preview mode: no Tauri event bus.
+      });
+  }
+
+  private async beginDrag(): Promise<void> {
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      const win = getCurrentWindow();
+      await win.startDragging();
+      await new Promise((resolve) => window.setTimeout(resolve, 120));
+      const position = await win.outerPosition();
+      const size = await win.outerSize();
+      const anchor = { x: position.x, bottom: position.y + size.height };
+      this.state.hub.anchor = anchor;
+      savePersistentState(this.state);
+      await setHubAnchor(anchor.x, anchor.bottom);
+    } catch {
+      // Ignore (drag unavailable).
+    }
+  }
+
+  private async resetPosition(): Promise<void> {
+    this.state.hub.anchor = null;
+    savePersistentState(this.state);
+    await clearHubAnchor();
+    this.renderPanel();
+  }
+
+  private async onAutostartToggle(enabled: boolean): Promise<void> {
+    const ok = await setAutostart(enabled);
+    if (!ok) {
+      const input = this.panelEl.querySelector<HTMLInputElement>('[data-autostart]');
+      if (input) input.checked = !enabled;
     }
   }
 

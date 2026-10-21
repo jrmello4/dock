@@ -13,8 +13,10 @@ Clique em um card para abrir o painel; `Esc` ou o `✕` fecham. O Leme se escond
 ## Personalização
 
 - Tema escuro/claro e opacidade do vidro.
-- Escolha quais widgets aparecem.
-- A pílula fica ancorada no canto inferior direito, acima da barra de tarefas, e cresce para cima quando um painel abre.
+- Escolha quais widgets aparecem, mostrar sobre tela cheia e iniciar com o Windows.
+- Arraste pela alça `⠿` para reposicionar; "Reposicionar no canto" volta ao padrão.
+- A pílula fica ancorada acima da barra de tarefas e cresce para cima quando um painel abre.
+- Ícone na bandeja: clique esquerdo mostra/oculta o Leme, clique direito abre o menu.
 
 ## Como executar
 

@@ -140,12 +140,19 @@ export interface DailyState {
   tasks: DailyTask[];
 }
 
+export interface HubAnchor {
+  x: number;
+  bottom: number;
+}
+
 export interface HubSettings {
   theme: 'dark' | 'light';
   opacity: number;
   showMusic: boolean;
   showGithub: boolean;
   showDaily: boolean;
+  showOverFullscreen: boolean;
+  anchor: HubAnchor | null;
 }
 
 export interface DockState {
