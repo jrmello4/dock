@@ -1,10 +1,12 @@
 import {
   CalendarEventItem,
+  DailyState,
   DockItem,
   DockScreenMode,
   DockState,
   EnvironmentProfile,
   GithubProfileState,
+  HubSettings,
   PetType,
   ReminderItem,
   ThemeId,
@@ -324,7 +326,7 @@ export function createDefaultState(): DockState {
     environments: cloneDefaultEnvironments(),
     themeId: 'native',
     petType: 'cat',
-    dockScreenMode: 'reserve',
+    dockScreenMode: 'float',
     iconSize: 48,
     magnification: 1.48,
     showReflections: true,
@@ -409,7 +411,76 @@ export function createDefaultState(): DockState {
       loading: false,
       error: '',
     },
+    daily: {
+      date: today,
+      tasks: [
+        { id: 'd1', text: 'Revisar e-mails e chamados', done: false },
+        { id: 'd2', text: 'Stand-up / alinhamento do dia', done: false },
+        { id: 'd3', text: 'Fechar o dia e registrar pendências', done: false },
+      ],
+    },
+    hub: {
+      theme: 'dark',
+      opacity: 0.92,
+      showMusic: true,
+      showGithub: true,
+      showDaily: true,
+    },
   };
+}
+
+/** Sanitizes the persisted daily checklist and resets it when the day changed. */
+function sanitizeDaily(raw: unknown, base: DailyState): DailyState {
+  const today = todayDateKey();
+  if (!raw || typeof raw !== 'object') {
+    return { date: today, tasks: base.tasks.map((task) => ({ ...task })) };
+  }
+  const obj = raw as Record<string, unknown>;
+  const rawTasks = Array.isArray(obj.tasks) ? obj.tasks.slice(0, 30) : base.tasks;
+  const tasks = rawTasks.flatMap((entry, index) => {
+    if (!entry || typeof entry !== 'object') return [];
+    const item = entry as Record<string, unknown>;
+    const text = typeof item.text === 'string' ? item.text.trim().slice(0, 160) : '';
+    if (!text) return [];
+    return [
+      {
+        id: sanitizeDomId(item.id, `task-${index}`),
+        text,
+        done: item.done === true,
+      },
+    ];
+  });
+  const savedDate =
+    typeof obj.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(obj.date) ? obj.date : today;
+  const sameDay = savedDate === today;
+  return {
+    date: today,
+    tasks: sameDay ? tasks : tasks.map((task) => ({ ...task, done: false })),
+  };
+}
+
+function sanitizeHub(raw: unknown, base: HubSettings): HubSettings {
+  if (!raw || typeof raw !== 'object') return base;
+  const obj = raw as Record<string, unknown>;
+  const rawOpacity = Number(obj.opacity);
+  return {
+    theme: obj.theme === 'light' ? 'light' : obj.theme === 'dark' ? 'dark' : base.theme,
+    opacity: Number.isFinite(rawOpacity) ? Math.max(0.6, Math.min(1, rawOpacity)) : base.opacity,
+    showMusic: typeof obj.showMusic === 'boolean' ? obj.showMusic : base.showMusic,
+    showGithub: typeof obj.showGithub === 'boolean' ? obj.showGithub : base.showGithub,
+    showDaily: typeof obj.showDaily === 'boolean' ? obj.showDaily : base.showDaily,
+  };
+}
+
+/** Resets the daily checklist when the local day changed. Returns true when it reset. */
+export function resetDailyIfNeeded(state: DockState): boolean {
+  const today = todayDateKey();
+  if (state.daily.date === today) return false;
+  state.daily = {
+    date: today,
+    tasks: state.daily.tasks.map((task) => ({ ...task, done: false })),
+  };
+  return true;
 }
 
 /**
@@ -490,6 +561,9 @@ export function validateAndMigrateSavedState(
       ? saved.githubUsername.trim().replace(/^@/, '').slice(0, 40)
       : '';
 
+  const daily = sanitizeDaily(saved.daily, baseState.daily);
+  const hub = sanitizeHub(saved.hub, baseState.hub);
+
   return {
     ...baseState,
     activeEnvId,
@@ -514,6 +588,8 @@ export function validateAndMigrateSavedState(
       ...baseState.github,
       username: githubUsername,
     },
+    daily,
+    hub,
   };
 }
 
@@ -551,6 +627,8 @@ export function savePersistentState(state: DockState): void {
       lastWaterDate: state.lastWaterDate || todayDateKey(),
       weatherCity: state.weather.city !== 'Detectando...' ? state.weather.city : undefined,
       githubUsername: state.github.username,
+      daily: state.daily,
+      hub: state.hub,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(subset));
   } catch {

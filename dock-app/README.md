@@ -1,11 +1,20 @@
-# Leme Desktop (`./dock-app`)
+# Leme (`./dock-app`)
 
-Um Dock ultraleve para Desktop, construído com **Tauri v2 (Rust) + Vanilla TypeScript + Vite**.
+Companion de widgets para o canto da barra do Windows, construído com **Tauri v2 (Rust) + Vanilla TypeScript + Vite**. A barra nativa continua intacta: o Leme é uma pílula flutuante ancorada logo acima dela.
 
-## Destaques de Performance
-- **Zero-framework no Frontend:** Manipulação direta de DOM/SVG e física de magnificação acelerada por GPU (`scale3d`).
-- **Backend em Rust Nativo (`src-tauri`):** Leitura real de uso de CPU e Memória RAM (`sysinfo`), abertura de aplicativos/pastas/URLs nativos do sistema operacional e controle de *click-through* (`set_ignore_cursor_events`).
-- **Partículas Sazonais Inteligentes:** O motor Canvas de neve, luzes natalinas, morcegos e folhas pausa automaticamente (`cancelAnimationFrame`) quando você usa um tema clássico, mantendo **0% de uso de CPU em repouso**.
+## Widgets
+
+- **Now Playing (Windows SMTC):** capa, título, artista, progresso e controles reais (play/pause, anterior, próxima) na sessão ativa do player.
+- **GitHub:** contribuições no ano, repositórios públicos e última atividade.
+- **Diário:** checklist de tarefas recorrentes, com reset automático todo dia.
+
+Clique em um card para abrir o painel; `Esc` ou o `✕` fecham. O Leme se esconde sozinho quando um app está em tela cheia.
+
+## Personalização
+
+- Tema escuro/claro e opacidade do vidro.
+- Escolha quais widgets aparecem.
+- A pílula fica ancorada no canto inferior direito, acima da barra de tarefas, e cresce para cima quando um painel abre.
 
 ## Como executar
 
@@ -13,10 +22,16 @@ Um Dock ultraleve para Desktop, construído com **Tauri v2 (Rust) + Vanilla Type
 ```powershell
 npm.cmd run dev
 ```
-Acesse `http://localhost:5175` para testar todos os ambientes, widgets ao vivo, 14 temas e mascotes instantaneamente.
+Acesse `http://localhost:5175` para iterar no visual.
 
 ### 2. Modo App Desktop Nativo (Tauri v2 + Rust)
 ```powershell
 npm.cmd run tauri:dev
 ```
-Compila o backend em Rust e abre a janela transparente sempre no topo (`alwaysOnTop`, sem bordas).
+
+### 3. Instaladores
+
+```powershell
+npm.cmd run tauri:build
+```
+Saída em `src-tauri/target/release/bundle/` (MSI e NSIS).

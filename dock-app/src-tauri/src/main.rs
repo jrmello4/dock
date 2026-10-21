@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicI32, Ordering},
     Arc, Mutex,
 };
 use std::time::Duration;
@@ -11,6 +11,7 @@ use tauri::{
     Manager, PhysicalPosition, PhysicalSize, Position, Size, State, WebviewWindow, WindowEvent,
 };
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 struct InteractiveRect {
     left: f64,
@@ -85,7 +86,7 @@ struct HitBoxPayload {
 }
 
 #[cfg(target_os = "windows")]
-#[allow(non_snake_case, clippy::upper_case_acronyms)]
+#[allow(non_snake_case, clippy::upper_case_acronyms, dead_code)]
 mod win32 {
     use super::{NowPlayingInfo, OpenWindowInfo};
     use std::collections::HashMap;
@@ -644,6 +645,32 @@ mod win32 {
     /// Reads the cached snapshot exactly like the UI does (used by `--probe-media`).
     pub fn cached_smtc_snapshot() -> Option<SmtcNowPlaying> {
         cached_smtc_now_playing()
+    }
+
+    /// Sends a transport command to the current SMTC session on a dedicated COM/WinRT thread.
+    pub fn smtc_control(action: &str) {
+        let action = action.to_string();
+        std::thread::spawn(move || {
+            if !ensure_winrt_initialized() {
+                return;
+            }
+            let Ok(manager) = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
+                .and_then(|operation| operation.join())
+            else {
+                return;
+            };
+            let Ok(session) = manager.GetCurrentSession() else {
+                return;
+            };
+            let _ = match action.as_str() {
+                "toggle" => session.TryTogglePlayPauseAsync().and_then(|op| op.join()),
+                "next" => session.TrySkipNextAsync().and_then(|op| op.join()),
+                "prev" => session.TrySkipPreviousAsync().and_then(|op| op.join()),
+                "play" => session.TryPlayAsync().and_then(|op| op.join()),
+                "pause" => session.TryPauseAsync().and_then(|op| op.join()),
+                _ => Ok(false),
+            };
+        });
     }
 
     fn find_player_window(windows: &[OpenWindowInfo], source: &str) -> isize {
@@ -1422,6 +1449,53 @@ mod win32 {
         }
     }
 
+    /// Returns the work area (`rcWork`) of the monitor containing `hwnd`, excluding the taskbar.
+    pub fn get_window_work_area(hwnd: isize) -> RECT {
+        unsafe {
+            if hwnd != 0 {
+                let hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                if hmon != 0 {
+                    let mut mi = MONITORINFO {
+                        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                        rcMonitor: RECT {
+                            left: 0,
+                            top: 0,
+                            right: 0,
+                            bottom: 0,
+                        },
+                        rcWork: RECT {
+                            left: 0,
+                            top: 0,
+                            right: 0,
+                            bottom: 0,
+                        },
+                        dwFlags: 0,
+                    };
+                    if GetMonitorInfoW(hmon, &mut mi) != 0 {
+                        return mi.rcWork;
+                    }
+                }
+            }
+            let mut rect = RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            };
+            SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut rect as *mut RECT as *mut c_void, 0);
+            if rect.right <= rect.left || rect.bottom <= rect.top {
+                let (w, h) = get_screen_size();
+                rect = RECT {
+                    left: 0,
+                    top: 0,
+                    right: w,
+                    bottom: h,
+                };
+            }
+            rect
+        }
+    }
+
     /// Registers/updates or removes a Windows AppBar (`SHAppBarMessage`) for the dock's monitor and
     /// reserves the primary WorkArea. The AppBar is bound to one HWND, so `ABM_NEW` happens once and
     /// later monitor changes only move the same registration through `ABM_SETPOS`.
@@ -2070,6 +2144,47 @@ fn get_now_playing_media() -> NowPlayingInfo {
     get_desktop_snapshot().media
 }
 
+/// Hub media snapshot: SMTC + artwork only, without the EnumWindows pass.
+#[tauri::command]
+fn get_now_playing_light() -> NowPlayingInfo {
+    #[cfg(target_os = "windows")]
+    {
+        win32::detect_now_playing(&[])
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        NowPlayingInfo {
+            detected: false,
+            source_app: String::new(),
+            playing: false,
+            title: String::new(),
+            artist: String::new(),
+            hwnd: 0,
+            position_sec: 0,
+            duration_sec: 180,
+            estimated: true,
+            artwork_data_url: String::new(),
+        }
+    }
+}
+
+#[tauri::command]
+fn smtc_control(action: String) {
+    #[cfg(target_os = "windows")]
+    {
+        win32::smtc_control(&action);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = action;
+    }
+}
+
+#[tauri::command]
+fn set_hub_height(window: tauri::Window, height: f64) -> Result<(), String> {
+    position_hub(&window, height).map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 fn send_media_control(action: String) {
     #[cfg(target_os = "windows")]
@@ -2231,25 +2346,81 @@ fn launch_target(target: String) -> Result<(), String> {
     }
 }
 
-fn position_window_at_bottom(window: &WebviewWindow) {
-    let _ = window.set_shadow(false);
-    let _ = window.set_always_on_top(true);
+const HUB_WIDTH_LOGICAL: f64 = 520.0;
+const HUB_COLLAPSED_HEIGHT: f64 = 76.0;
+static HUB_HEIGHT_X100: AtomicI32 = AtomicI32::new(7600);
 
-    if let Ok(Some(monitor)) = window.current_monitor() {
-        let mon_size = monitor.size();
-        let mon_pos = monitor.position();
-        let win_w = mon_size.width;
-        let win_h = (620.0 * monitor.scale_factor()) as u32;
+/// Minimal window surface shared by `Window` (event callbacks) and `WebviewWindow` (commands/setup).
+trait HubWindowOps {
+    fn hub_scale(&self) -> f64;
+    fn hub_resize(&self, width: u32, height: u32) -> tauri::Result<()>;
+    fn hub_move(&self, x: i32, y: i32) -> tauri::Result<()>;
+    fn hub_hwnd(&self) -> isize;
+}
 
-        let x = mon_pos.x;
-        let y = mon_pos.y + (mon_size.height as i32) - (win_h as i32);
-
-        let _ = window.set_size(Size::Physical(PhysicalSize {
-            width: win_w,
-            height: win_h,
-        }));
-        let _ = window.set_position(Position::Physical(PhysicalPosition { x, y }));
+impl HubWindowOps for WebviewWindow {
+    fn hub_scale(&self) -> f64 {
+        self.scale_factor().unwrap_or(1.0)
     }
+    fn hub_resize(&self, width: u32, height: u32) -> tauri::Result<()> {
+        self.set_size(Size::Physical(PhysicalSize { width, height }))
+    }
+    fn hub_move(&self, x: i32, y: i32) -> tauri::Result<()> {
+        self.set_position(Position::Physical(PhysicalPosition { x, y }))
+    }
+    fn hub_hwnd(&self) -> isize {
+        #[cfg(target_os = "windows")]
+        {
+            self.hwnd().map(|h| h.0 as isize).unwrap_or(0)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            0
+        }
+    }
+}
+
+impl HubWindowOps for tauri::Window {
+    fn hub_scale(&self) -> f64 {
+        self.scale_factor().unwrap_or(1.0)
+    }
+    fn hub_resize(&self, width: u32, height: u32) -> tauri::Result<()> {
+        self.set_size(Size::Physical(PhysicalSize { width, height }))
+    }
+    fn hub_move(&self, x: i32, y: i32) -> tauri::Result<()> {
+        self.set_position(Position::Physical(PhysicalPosition { x, y }))
+    }
+    fn hub_hwnd(&self) -> isize {
+        #[cfg(target_os = "windows")]
+        {
+            self.hwnd().map(|h| h.0 as isize).unwrap_or(0)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            0
+        }
+    }
+}
+
+/// Sizes the hub and anchors it to the bottom-right of the monitor work area (above the taskbar).
+fn position_hub<W: HubWindowOps + ?Sized>(window: &W, height_logical: f64) -> tauri::Result<()> {
+    let height_logical = height_logical.clamp(HUB_COLLAPSED_HEIGHT, 640.0);
+    HUB_HEIGHT_X100.store((height_logical * 100.0).round() as i32, Ordering::SeqCst);
+
+    let scale = window.hub_scale();
+    let width_px = (HUB_WIDTH_LOGICAL * scale).round() as u32;
+    let height_px = (height_logical * scale).round() as u32;
+    window.hub_resize(width_px, height_px)?;
+
+    #[cfg(target_os = "windows")]
+    {
+        let work = win32::get_window_work_area(window.hub_hwnd());
+        let margin = (10.0 * scale).round() as i32;
+        let x = (work.right - width_px as i32 - margin).max(work.left + margin);
+        let y = (work.bottom - height_px as i32 - margin).max(work.top + margin);
+        window.hub_move(x, y)?;
+    }
+    Ok(())
 }
 
 fn main() {
@@ -2353,168 +2524,57 @@ fn main() {
         previous_panic_hook(info);
     }));
 
-    let rect_for_setup = Arc::clone(&interactive_rect);
-    let autohide_for_setup = Arc::clone(&auto_hide_dock);
-    let reveal_for_setup = Arc::clone(&cursor_at_bottom);
     let fullscreen_for_setup = Arc::clone(&fullscreen_active);
 
     tauri::Builder::default()
         .manage(AppState {
             sys: Mutex::new(sys),
             interactive_rect,
-            taskbar_hidden: AtomicBool::new(true),
-            reserve_work_area: AtomicBool::new(true),
+            taskbar_hidden: AtomicBool::new(false),
+            reserve_work_area: AtomicBool::new(false),
             auto_hide_dock,
             cursor_at_bottom,
             fullscreen_active,
         })
         .setup(move |app| {
             if let Some(window) = app.get_webview_window("main") {
-                position_window_at_bottom(&window);
+                position_hub(&window, HUB_COLLAPSED_HEIGHT)?;
 
                 #[cfg(target_os = "windows")]
                 {
-                    // Ask Tauri for the real native handle instead of matching the window title.
                     let native_hwnd = window.hwnd().map(|h| h.0 as isize).unwrap_or(0);
                     win32::cache_main_window_hwnd(native_hwnd);
-                    let hwnd = if native_hwnd != 0 {
-                        native_hwnd
-                    } else {
-                        win32::resolve_main_window_hwnd()
-                    };
-                    let orig = win32::get_original_work_area();
-                    win32::spawn_crash_watchdog(orig, hwnd);
 
-                    let scale = window.scale_factor().unwrap_or(1.0);
-                    let initial_physical_reserve = (82.0 * scale).round() as i32;
-                    win32::set_windows_taskbar_visible(false);
-                    win32::set_desired_reserve_px(initial_physical_reserve);
-
-                    let win_clone = window.clone();
-                    let rect_clone = Arc::clone(&rect_for_setup);
-                    let autohide_clone = Arc::clone(&autohide_for_setup);
-                    let reveal_clone = Arc::clone(&reveal_for_setup);
+                    // The hub has no shell state to maintain; it only needs to hide itself while
+                    // a fullscreen app is in front.
                     let fullscreen_clone = Arc::clone(&fullscreen_for_setup);
                     let self_pid = std::process::id();
-
-                    std::thread::spawn(move || {
-                        let mut currently_ignoring = false;
-                        let mut last_fullscreen = false;
-                        let mut tick_count: u32 = 0;
-                        let mut sleep_ms: u64 = 28;
-                        loop {
-                            std::thread::sleep(Duration::from_millis(sleep_ms));
-                            tick_count = tick_count.wrapping_add(1);
-
-                            // Emergency global hotkey: Ctrl + Alt + Shift + R restores Windows Taskbar & WorkArea
-                            if tick_count.is_multiple_of(5)
-                                && win32::is_emergency_restore_hotkey_pressed()
-                            {
-                                win32::set_desired_reserve_px(0);
-                                win32::set_windows_taskbar_visible(true);
-                            }
-
-                            // Check fullscreen state every ~250ms
-                            if tick_count.is_multiple_of(8) {
-                                let is_fs = win32::is_foreground_fullscreen(self_pid);
-                                fullscreen_clone.store(is_fs, Ordering::SeqCst);
-                            }
-
-                            let is_fullscreen = fullscreen_clone.load(Ordering::SeqCst);
-                            if is_fullscreen != last_fullscreen {
-                                last_fullscreen = is_fullscreen;
-                                // Give borderless fullscreen apps the whole monitor: drop the
-                                // reservation while fullscreen is in front and restore it on exit.
-                                win32::set_reservation_suspended(is_fullscreen);
-                            }
-                            if is_fullscreen {
-                                sleep_ms = 180;
-                                if !currently_ignoring {
-                                    currently_ignoring = true;
-                                    let _ = win_clone.set_ignore_cursor_events(true);
-                                }
-                                continue;
-                            }
-
-                            let Some((cx, cy)) = win32::get_cursor_pos() else {
-                                sleep_ms = 65;
-                                continue;
-                            };
-                            let Ok(win_pos) = win_clone.outer_position() else {
-                                sleep_ms = 65;
-                                continue;
-                            };
-                            let Ok(win_size) = win_clone.outer_size() else {
-                                sleep_ms = 65;
-                                continue;
-                            };
-                            let mon_bottom = win_pos.y + (win_size.height as i32);
-                            let scale = win_clone.scale_factor().unwrap_or(1.0);
-                            let rel_x = (cx - win_pos.x) as f64 / scale;
-                            let rel_y = (cy - win_pos.y) as f64 / scale;
-
-                            let inside_hitbox = if let Ok(r) = rect_clone.lock() {
-                                rel_x >= (r.left - 18.0)
-                                    && rel_x <= (r.right + 18.0)
-                                    && rel_y >= (r.top - 32.0)
-                                    && rel_y <= (r.bottom + 24.0)
-                            } else {
-                                true
-                            };
-
-                            let is_autohide = autohide_clone.load(Ordering::SeqCst);
-                            if is_autohide {
-                                let was_revealed = reveal_clone.load(Ordering::SeqCst);
-                                if cy >= mon_bottom - 12 {
-                                    reveal_clone.store(true, Ordering::SeqCst);
-                                } else if was_revealed && !inside_hitbox {
-                                    reveal_clone.store(false, Ordering::SeqCst);
-                                }
-                            } else {
-                                reveal_clone.store(true, Ordering::SeqCst);
-                            }
-
-                            let is_visible_now = reveal_clone.load(Ordering::SeqCst);
-                            let should_ignore = !(inside_hitbox && is_visible_now);
-
-                            if should_ignore != currently_ignoring {
-                                currently_ignoring = should_ignore;
-                                let _ = win_clone.set_ignore_cursor_events(should_ignore);
-                            }
-
-                            // Adaptive polling rate: 28ms when near/inside dock, 65ms when cursor is far above dock
-                            sleep_ms = if inside_hitbox || cy >= mon_bottom - 220 {
-                                28
-                            } else {
-                                65
-                            };
-                        }
+                    std::thread::spawn(move || loop {
+                        std::thread::sleep(Duration::from_millis(600));
+                        let is_fs = win32::is_foreground_fullscreen(self_pid);
+                        fullscreen_clone.store(is_fs, Ordering::SeqCst);
                     });
                 }
             }
             Ok(())
         })
-        .on_window_event(|_window, event| {
-            if let WindowEvent::Destroyed | WindowEvent::CloseRequested { .. } = event {
-                #[cfg(target_os = "windows")]
-                {
-                    win32::stop_crash_watchdog_and_restore();
-                }
-            }
-            // A DPI change moves the dock to a different physical pixel grid: re-apply the
-            // reservation so the boundary does not drift on 125%/150%/200% scaling changes.
+        .on_window_event(|window, event| {
+            // Re-anchor on DPI changes so the hub keeps hugging the taskbar corner.
             #[cfg(target_os = "windows")]
-            {
-                if let WindowEvent::ScaleFactorChanged { .. } = event {
-                    win32::reapply_desired_reservation();
-                }
+            if let WindowEvent::ScaleFactorChanged { .. } = event {
+                let height = HUB_HEIGHT_X100.load(Ordering::SeqCst) as f64 / 100.0;
+                let _ = position_hub(window, height);
             }
+            let _ = event;
         })
         .invoke_handler(tauri::generate_handler![
             get_system_metrics,
             get_desktop_snapshot,
             get_open_windows,
             get_now_playing_media,
+            get_now_playing_light,
+            smtc_control,
+            set_hub_height,
             send_media_control,
             focus_or_minimize_window,
             control_window,

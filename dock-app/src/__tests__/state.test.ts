@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createDefaultState,
+  resetDailyIfNeeded,
   sanitizeDomId,
   SCHEMA_VERSION,
   validateAndMigrateSavedState,
@@ -39,7 +40,7 @@ describe('state.ts — Schema validation, migration & DOM ID sanitization', () =
 
     expect(migrated.themeId).toBe('native');
     expect(migrated.petType).toBe('cat');
-    expect(migrated.dockScreenMode).toBe('reserve');
+    expect(migrated.dockScreenMode).toBe('float');
     expect(migrated.iconSize).toBe(64);
     expect(migrated.magnification).toBe(1.0);
     expect(migrated.waterGoal).toBe(base.waterGoal);
@@ -74,5 +75,52 @@ describe('state.ts — Schema validation, migration & DOM ID sanitization', () =
     expect(migrated.environments[0].items[0].id).toBe('dupid');
     expect(migrated.environments[0].items[0].span).toBe(1);
     expect(migrated.environments[0].items[1].id).toBe('dupid_1');
+  });
+
+  it('resets yesterday\'s daily checklist, keeps recurring tasks and clamps hub settings', () => {
+    const base = createDefaultState();
+    const migrated = validateAndMigrateSavedState(
+      {
+        version: 2,
+        daily: {
+          date: '2000-01-01',
+          tasks: [
+            { id: 'a', text: 'Tarefa 1', done: true },
+            { id: 'b', text: 'Tarefa 2', done: false },
+            { id: 'bad', text: '   ', done: true },
+          ],
+        },
+        hub: {
+          theme: 'light',
+          opacity: 0.2,
+          showMusic: false,
+          showGithub: true,
+          showDaily: false,
+        },
+      },
+      base
+    );
+
+    expect(migrated.daily.tasks.map((task) => task.text)).toEqual(['Tarefa 1', 'Tarefa 2']);
+    expect(migrated.daily.tasks.every((task) => !task.done)).toBe(true);
+    expect(migrated.daily.date).not.toBe('2000-01-01');
+    expect(migrated.hub.theme).toBe('light');
+    expect(migrated.hub.opacity).toBe(0.6);
+    expect(migrated.hub.showMusic).toBe(false);
+    expect(migrated.hub.showDaily).toBe(false);
+    expect(migrated.hub.showGithub).toBe(true);
+  });
+
+  it('resets the checklist in place only when the day actually changed', () => {
+    const state = createDefaultState();
+    state.daily.tasks[0].done = true;
+
+    expect(resetDailyIfNeeded(state)).toBe(false);
+    expect(state.daily.tasks[0].done).toBe(true);
+
+    state.daily.date = '2000-01-01';
+    expect(resetDailyIfNeeded(state)).toBe(true);
+    expect(state.daily.tasks.every((task) => !task.done)).toBe(true);
+    expect(state.daily.date).not.toBe('2000-01-01');
   });
 });

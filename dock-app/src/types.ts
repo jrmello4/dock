@@ -128,6 +128,26 @@ export interface GithubProfileState {
   error: string;
 }
 
+export interface DailyTask {
+  id: string;
+  text: string;
+  done: boolean;
+}
+
+export interface DailyState {
+  /** Local day (`YYYY-MM-DD`) the checklist belongs to. */
+  date: string;
+  tasks: DailyTask[];
+}
+
+export interface HubSettings {
+  theme: 'dark' | 'light';
+  opacity: number;
+  showMusic: boolean;
+  showGithub: boolean;
+  showDaily: boolean;
+}
+
 export interface DockState {
   activeEnvId: string;
   environments: EnvironmentProfile[];
@@ -166,4 +186,6 @@ export interface DockState {
   waterGoal: number;
   lastWaterDate: string;
   github: GithubProfileState;
+  daily: DailyState;
+  hub: HubSettings;
 }

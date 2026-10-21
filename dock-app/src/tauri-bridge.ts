@@ -104,6 +104,56 @@ export async function fetchNowPlayingMedia(): Promise<NowPlayingPayload> {
   return snap.media;
 }
 
+/**
+ * Lightweight now-playing fetch for the hub: SMTC + cached artwork, without enumerating windows.
+ */
+export async function fetchNowPlayingLight(): Promise<NowPlayingPayload> {
+  if (isTauriRuntime()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      return await invoke<NowPlayingPayload>('get_now_playing_light');
+    } catch {
+      // Ignore
+    }
+  }
+  return {
+    detected: false,
+    source_app: '',
+    playing: false,
+    title: '',
+    artist: '',
+    hwnd: 0,
+    position_sec: 0,
+    duration_sec: 180,
+    estimated: true,
+    artwork_data_url: '',
+  };
+}
+
+/** Transport controls through SMTC (session-specific, unlike the global media keys). */
+export async function smtcControl(
+  action: 'toggle' | 'next' | 'prev' | 'play' | 'pause'
+): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('smtc_control', { action });
+  } catch {
+    // Ignore
+  }
+}
+
+/** Resizes the hub and keeps it anchored above the taskbar. */
+export async function setHubHeight(height: number): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('set_hub_height', { height });
+  } catch {
+    // Ignore
+  }
+}
+
 export async function sendNativeMediaControl(
   action: 'play_pause' | 'next' | 'prev' | 'vol_up' | 'vol_down' | 'vol_mute'
 ): Promise<void> {
