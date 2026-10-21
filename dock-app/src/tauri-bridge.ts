@@ -28,6 +28,8 @@ export interface NowPlayingPayload {
   duration_sec: number;
   /** Present since the SMTC integration; absent means heuristic (estimated). */
   estimated?: boolean;
+  /** Data URL of the album art reported by Windows SMTC, when available. */
+  artwork_data_url?: string;
 }
 
 export interface DesktopSnapshotPayload {
@@ -80,6 +82,7 @@ export async function fetchDesktopSnapshot(): Promise<DesktopSnapshotPayload> {
       position_sec: 0,
       duration_sec: 180,
       estimated: true,
+      artwork_data_url: '',
     },
   };
   if (!isTauriRuntime()) return empty;

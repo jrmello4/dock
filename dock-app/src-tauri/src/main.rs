@@ -66,6 +66,8 @@ pub struct NowPlayingInfo {
     pub duration_sec: u32,
     /// `true` when the timeline came from the window-title heuristic instead of SMTC.
     pub estimated: bool,
+    /// Data URL of the album artwork exposed by SMTC, when available.
+    pub artwork_data_url: String,
 }
 
 #[derive(Serialize)]
@@ -96,8 +98,10 @@ mod win32 {
     use windows::Media::Control::{
         GlobalSystemMediaTransportControlsSession,
         GlobalSystemMediaTransportControlsSessionManager,
+        GlobalSystemMediaTransportControlsSessionMediaProperties,
         GlobalSystemMediaTransportControlsSessionPlaybackStatus,
     };
+    use windows::Storage::Streams::DataReader;
 
     #[repr(C)]
     pub struct POINT {
@@ -420,6 +424,7 @@ mod win32 {
         pub playing: bool,
         pub position_sec: u32,
         pub duration_sec: u32,
+        pub artwork_data_url: String,
     }
 
     struct SmtcCache {
@@ -500,6 +505,46 @@ mod win32 {
         )
     }
 
+    fn read_thumbnail_data_url(
+        properties: &GlobalSystemMediaTransportControlsSessionMediaProperties,
+    ) -> Option<String> {
+        let stream = properties
+            .Thumbnail()
+            .ok()?
+            .OpenReadAsync()
+            .ok()?
+            .join()
+            .ok()?;
+        let size = stream.Size().ok()?;
+        if size == 0 || size > 2_000_000 {
+            return None;
+        }
+        let content_type = stream
+            .ContentType()
+            .map(|c| c.to_string())
+            .unwrap_or_default();
+        let input = stream.GetInputStreamAt(0).ok()?;
+        let reader = DataReader::CreateDataReader(&input).ok()?;
+        reader.LoadAsync(size as u32).ok()?.join().ok()?;
+        let available = reader
+            .UnconsumedBufferLength()
+            .unwrap_or(size as u32)
+            .min(size as u32) as usize;
+        if available == 0 {
+            return None;
+        }
+        let mut bytes = vec![0u8; available];
+        reader.ReadBytes(&mut bytes).ok()?;
+        let mime = if content_type.starts_with("image/") {
+            content_type
+        } else {
+            "image/png".to_string()
+        };
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        Some(format!("data:{mime};base64,{encoded}"))
+    }
+
     /// Blocking WinRT query. Must only be called from a dedicated probe thread (or `--probe-media`).
     pub fn query_smtc_now_playing() -> Option<SmtcNowPlaying> {
         if !ensure_winrt_initialized() {
@@ -536,6 +581,7 @@ mod win32 {
                 status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing
             });
         let (position_sec, duration_sec) = smtc_timeline_secs(&session);
+        let artwork_data_url = read_thumbnail_data_url(&properties).unwrap_or_default();
 
         Some(SmtcNowPlaying {
             title: title.trim().to_string(),
@@ -548,6 +594,7 @@ mod win32 {
             playing,
             position_sec,
             duration_sec,
+            artwork_data_url,
         })
     }
 
@@ -1357,6 +1404,23 @@ mod win32 {
         }
     }
 
+    /// Rect that `SPI_SETWORKAREA` should receive for the monitor the dock is on.
+    /// Secondary monitors cannot own the system work area, so reserving there restores `orig`
+    /// (undoing any previous reservation on the primary) instead of shrinking the wrong screen.
+    fn primary_work_area_rect(reserved: i32, mon_rect: RECT, orig: RECT) -> RECT {
+        let is_primary = mon_rect.left == 0 && mon_rect.top == 0;
+        if reserved > 0 && is_primary {
+            RECT {
+                left: orig.left,
+                top: orig.top,
+                right: orig.right,
+                bottom: appbar_top_for(mon_rect, reserved).max(orig.top),
+            }
+        } else {
+            orig
+        }
+    }
+
     /// Registers/updates or removes a Windows AppBar (`SHAppBarMessage`) for the dock's monitor and
     /// reserves the primary WorkArea. The AppBar is bound to one HWND, so `ABM_NEW` happens once and
     /// later monitor changes only move the same registration through `ABM_SETPOS`.
@@ -1398,26 +1462,13 @@ mod win32 {
 
             // SPI_SETWORKAREA applies to the primary monitor ((0, 0) origin).
             // Never pass a secondary monitor's rect to SPI_SETWORKAREA!
-            let is_primary_monitor = mon_rect.left == 0 && mon_rect.top == 0;
-            if reserved <= 0 || is_primary_monitor {
-                let orig = get_original_work_area();
-                let mut rect = if reserved <= 0 {
-                    orig
-                } else {
-                    RECT {
-                        left: orig.left,
-                        top: orig.top,
-                        right: orig.right,
-                        bottom: appbar_top_for(mon_rect, reserved).max(orig.top),
-                    }
-                };
-                SystemParametersInfoW(
-                    SPI_SETWORKAREA,
-                    0,
-                    &mut rect as *mut RECT as *mut c_void,
-                    SPIF_SENDCHANGE,
-                );
-            }
+            let mut rect = primary_work_area_rect(reserved, mon_rect, get_original_work_area());
+            SystemParametersInfoW(
+                SPI_SETWORKAREA,
+                0,
+                &mut rect as *mut RECT as *mut c_void,
+                SPIF_SENDCHANGE,
+            );
         }
     }
 
@@ -1695,7 +1746,8 @@ mod win32 {
                 hwnd,
                 position_sec: smtc.position_sec,
                 duration_sec: smtc.duration_sec,
-                estimated: false,
+                estimated: smtc.position_sec == 0 || smtc.duration_sec == 0,
+                artwork_data_url: smtc.artwork_data_url,
             };
         }
 
@@ -1735,6 +1787,7 @@ mod win32 {
                         position_sec,
                         duration_sec,
                         estimated: true,
+                        artwork_data_url: String::new(),
                     };
                 }
                 if let Some((artist, song)) = t.split_once(" - ") {
@@ -1752,6 +1805,7 @@ mod win32 {
                         position_sec,
                         duration_sec,
                         estimated: true,
+                        artwork_data_url: String::new(),
                     };
                 }
                 let (position_sec, duration_sec) = compute_media_timeline(app_label, t, true);
@@ -1765,6 +1819,7 @@ mod win32 {
                     position_sec,
                     duration_sec,
                     estimated: true,
+                    artwork_data_url: String::new(),
                 };
             }
         }
@@ -1810,6 +1865,7 @@ mod win32 {
                         position_sec,
                         duration_sec,
                         estimated: true,
+                        artwork_data_url: String::new(),
                     };
                 }
                 let (position_sec, duration_sec) = compute_media_timeline(source, &clean, true);
@@ -1823,6 +1879,7 @@ mod win32 {
                     position_sec,
                     duration_sec,
                     estimated: true,
+                    artwork_data_url: String::new(),
                 };
             }
         }
@@ -1837,6 +1894,7 @@ mod win32 {
             position_sec: 0,
             duration_sec: 180,
             estimated: true,
+            artwork_data_url: String::new(),
         }
     }
 
@@ -1907,6 +1965,29 @@ mod win32 {
             assert_eq!(appbar_top_for(mon, 80), 800);
             assert_eq!(appbar_top_for(mon, 9000), 340);
         }
+
+        #[test]
+        fn work_area_only_shrinks_the_primary_monitor() {
+            let orig = RECT {
+                left: 0,
+                top: 0,
+                right: 1600,
+                bottom: 900,
+            };
+            let secondary = RECT {
+                left: -1600,
+                top: 0,
+                right: 0,
+                bottom: 900,
+            };
+
+            assert_eq!(primary_work_area_rect(82, orig, orig).bottom, 818);
+            // Docking on a secondary monitor must restore the primary instead of shrinking it.
+            assert_eq!(primary_work_area_rect(82, secondary, orig).bottom, 900);
+            assert_eq!(primary_work_area_rect(0, orig, orig).bottom, 900);
+            // The reservation is clamped to half the monitor height.
+            assert_eq!(primary_work_area_rect(5000, orig, orig).bottom, 450);
+        }
     }
 }
 
@@ -1972,6 +2053,7 @@ fn get_desktop_snapshot() -> DesktopSnapshot {
                 position_sec: 0,
                 duration_sec: 180,
                 estimated: true,
+                artwork_data_url: String::new(),
             },
         }
     }
@@ -2177,16 +2259,29 @@ fn main() {
     {
         let args: Vec<String> = std::env::args().collect();
 
-        // Diagnostic entry point: `primodock-tauri.exe --probe-media` dumps the current SMTC
-        // session to %TEMP%\primodock-smtc-probe.json without touching the shell/taskbar.
-        if args.get(1).map(String::as_str) == Some("--probe-media") {
-            // Exercise the same path the dock uses: background probe thread + cache.
-            win32::start_smtc_probe();
-            std::thread::sleep(std::time::Duration::from_millis(1600));
-            let payload = match win32::cached_smtc_snapshot() {
+        // Diagnostic entry points: `--probe-media` exercises the same cached probe path the dock
+        // uses; `--probe-media-direct` does a single blocking WinRT query. Both dump the result to
+        // %TEMP%\primodock-smtc-probe.json without touching the shell/taskbar.
+        let probe_arg = args.get(1).map(String::as_str);
+        if probe_arg == Some("--probe-media") || probe_arg == Some("--probe-media-direct") {
+            let snapshot = if probe_arg == Some("--probe-media-direct") {
+                win32::query_smtc_now_playing()
+            } else {
+                win32::start_smtc_probe();
+                std::thread::sleep(std::time::Duration::from_millis(1600));
+                win32::cached_smtc_snapshot()
+            };
+            let payload = match snapshot {
                 Some(m) => format!(
-                    "{{\"detected\":true,\"title\":{:?},\"artist\":{:?},\"source_app\":{:?},\"playing\":{},\"position_sec\":{},\"duration_sec\":{}}}",
-                    m.title, m.artist, m.source_app, m.playing, m.position_sec, m.duration_sec
+                    "{{\"detected\":true,\"title\":{:?},\"artist\":{:?},\"source_app\":{:?},\"playing\":{},\"position_sec\":{},\"duration_sec\":{},\"artwork_len\":{},\"artwork_prefix\":{:?}}}",
+                    m.title,
+                    m.artist,
+                    m.source_app,
+                    m.playing,
+                    m.position_sec,
+                    m.duration_sec,
+                    m.artwork_data_url.len(),
+                    m.artwork_data_url.chars().take(24).collect::<String>()
                 ),
                 None => "{\"detected\":false}".to_string(),
             };

@@ -25,6 +25,12 @@ describe('security.ts — XSS escaping & URL/Target sanitization', () => {
     expect(sanitizeUrl('data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==')).toBe(
       'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=='
     );
+    expect(sanitizeUrl('data:image/jpeg;base64,/9j/4AAQSkZJRg==')).toBe(
+      'data:image/jpeg;base64,/9j/4AAQSkZJRg=='
+    );
+    expect(sanitizeUrl('data:image/webp;base64,UklGRg==')).toBe(
+      'data:image/webp;base64,UklGRg=='
+    );
   });
 
   it('blocks dangerous schemes and malformed data URLs in sanitizeUrl', () => {
