@@ -1312,15 +1312,16 @@ mod win32 {
                             );
                             DeleteDC(hdc);
                             if lines > 0 {
+                                let (px_chunks, _) = pixels.as_chunks_mut::<4>();
                                 let mut any_alpha = false;
-                                for px in pixels.chunks_exact_mut(4) {
+                                for px in px_chunks.iter_mut() {
                                     px.swap(0, 2);
                                     if px[3] != 0 {
                                         any_alpha = true;
                                     }
                                 }
                                 if !any_alpha {
-                                    for px in pixels.chunks_exact_mut(4) {
+                                    for px in px_chunks.iter_mut() {
                                         px[3] = 255;
                                     }
                                 }
