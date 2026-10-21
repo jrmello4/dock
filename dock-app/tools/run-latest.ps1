@@ -18,6 +18,9 @@ if (Test-Path $keyPath) {
     Write-Host 'Aviso: chave de assinatura nao encontrada; o build com updater pode falhar.'
 }
 
+# Keep the local Windows profile path out of the compiled binary.
+$env:RUSTFLAGS = "--remap-path-prefix=$env:USERPROFILE=/build"
+
 Write-Host 'Compilando a última versão (release + instaladores)...'
 & npm.cmd run tauri -- build
 if ($LASTEXITCODE -ne 0) {
