@@ -37,3 +37,8 @@ npm.cmd run tauri:dev
 npm.cmd run tauri:build
 ```
 Saída em `src-tauri/target/release/bundle/` (MSI e NSIS).
+
+### 4. Atualizar e executar a última versão
+
+Duplo clique em `run-latest.cmd` (ou rode `tools\run-latest.ps1`): ele fecha o Leme em execução,
+recompila o release e abre o binário atualizado.
