@@ -382,7 +382,7 @@ mod win32 {
     static WATCHDOG_CHILD: OnceLock<Mutex<Option<std::process::Child>>> = OnceLock::new();
     static WATCHDOG_HELPER: OnceLock<Mutex<Option<std::path::PathBuf>>> = OnceLock::new();
 
-    const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\PrimoDockSingleInstanceMutex_v1";
+    const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\LemeSingleInstanceMutex_v1";
 
     struct MediaTrackerState {
         track_key: String,
@@ -679,7 +679,7 @@ mod win32 {
 
     fn get_appbar_callback_msg() -> u32 {
         *APPBAR_CALLBACK_MSG.get_or_init(|| unsafe {
-            let name = to_wide("PrimoDockAppBarCallbackMsg_v1");
+            let name = to_wide("LemeAppBarCallbackMsg_v1");
             RegisterWindowMessageW(name.as_ptr())
         })
     }
@@ -699,7 +699,7 @@ mod win32 {
         }
     }
 
-    /// Resolves and caches the real Win32 `HWND` of PrimoDock's main window.
+    /// Resolves and caches the real Win32 `HWND` of Leme's main window.
     /// Tauri supplies it directly via `cache_main_window_hwnd`; the `FindWindowW` lookup is only
     /// a fallback for code paths that run before the window handle has been pushed (e.g. watchdog).
     pub fn resolve_main_window_hwnd() -> isize {
@@ -708,7 +708,7 @@ mod win32 {
             return cached;
         }
         unsafe {
-            let title = to_wide("PrimoDock");
+            let title = to_wide("Leme");
             let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
             if hwnd != 0 {
                 let mut pid: u32 = 0;
@@ -832,7 +832,7 @@ mod win32 {
         set_reserved_bottom_work_area(reserved);
     }
 
-    /// Ensures only a single instance of PrimoDock runs at any time (`CreateMutexW`).
+    /// Ensures only a single instance of Leme runs at any time (`CreateMutexW`).
     pub fn acquire_single_instance_mutex() -> bool {
         unsafe {
             let name = to_wide(SINGLE_INSTANCE_MUTEX_NAME);
@@ -844,7 +844,7 @@ mod win32 {
         }
     }
 
-    /// Checks whether a live PrimoDock instance currently holds the single-instance mutex.
+    /// Checks whether a live Leme instance currently holds the single-instance mutex.
     fn is_another_instance_running() -> bool {
         unsafe {
             let name = to_wide(SINGLE_INSTANCE_MUTEX_NAME);
@@ -859,7 +859,7 @@ mod win32 {
     }
 
     /// Out-of-process kernel watchdog (`WaitForSingleObject`):
-    /// Runs under a separate image name (`primodock-watchdog-helper.exe`) so `taskkill /F /IM primodock-tauri.exe`
+    /// Runs under a separate image name (`leme-watchdog-helper.exe`) so `taskkill /F /IM leme.exe`
     /// does not kill it. When the parent process dies, checks if a new instance has already started before restoring!
     pub fn run_crash_watchdog(parent_pid: u32, orig_rect: RECT, appbar_hwnd: isize) {
         unsafe {
@@ -900,7 +900,7 @@ mod win32 {
     }
 
     /// Spawns a detached background watchdog process under a separate image name in `%TEMP%`
-    /// so `taskkill /F /IM primodock-tauri.exe` and `taskkill /T` do not leave the taskbar hidden.
+    /// so `taskkill /F /IM leme.exe` and `taskkill /T` do not leave the taskbar hidden.
     pub fn spawn_crash_watchdog(orig_rect: RECT, appbar_hwnd: isize) {
         use std::os::windows::process::CommandExt;
         const DETACHED_PROCESS: u32 = 0x0000_0008;
@@ -923,7 +923,7 @@ mod win32 {
                 for entry in entries.flatten() {
                     let name = entry.file_name();
                     let name = name.to_string_lossy();
-                    if name.starts_with("primodock-watchdog-helper") && name.ends_with(".exe") {
+                    if name.starts_with("leme-watchdog-helper") && name.ends_with(".exe") {
                         let _ = std::fs::remove_file(entry.path());
                     }
                 }
@@ -936,7 +936,7 @@ mod win32 {
                 .map(|d| d.as_millis())
                 .unwrap_or(0);
             let helper_path = std::env::temp_dir().join(format!(
-                "primodock-watchdog-helper-{}-{}.exe",
+                "leme-watchdog-helper-{}-{}.exe",
                 std::process::id(),
                 stamp
             ));
@@ -1012,7 +1012,7 @@ mod win32 {
         ICON_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
     }
 
-    /// Captures and caches the user's original Windows WorkArea BEFORE PrimoDock modifies it
+    /// Captures and caches the user's original Windows WorkArea BEFORE Leme modifies it
     pub fn get_original_work_area() -> RECT {
         *ORIGINAL_WORK_AREA.get_or_init(|| unsafe {
             let mut rect = RECT {
@@ -1667,7 +1667,7 @@ mod win32 {
         if title.is_empty()
             || title == "Program Manager"
             || title == "Windows Input Experience"
-            || title == "PrimoDock"
+            || title == "Leme"
         {
             return 1;
         }
@@ -2254,7 +2254,7 @@ fn position_window_at_bottom(window: &WebviewWindow) {
 
 fn main() {
     // 1. Out-of-process Crash Watchdog mode (`--watchdog <pid> <left> <top> <right> <bottom> [appbar_hwnd]`)
-    // Runs from an isolated temp executable name (`primodock-watchdog-helper.exe`) so `taskkill /F /IM primodock-tauri.exe`
+    // Runs from an isolated temp executable name (`leme-watchdog-helper.exe`) so `taskkill /F /IM leme.exe`
     // does not kill it, and verifies the single-instance mutex before restoring so dev-reload/relaunch never races.
     #[cfg(target_os = "windows")]
     {
@@ -2262,7 +2262,7 @@ fn main() {
 
         // Diagnostic entry points: `--probe-media` exercises the same cached probe path the dock
         // uses; `--probe-media-direct` does a single blocking WinRT query. Both dump the result to
-        // %TEMP%\primodock-smtc-probe.json without touching the shell/taskbar.
+        // %TEMP%\leme-smtc-probe.json without touching the shell/taskbar.
         let probe_arg = args.get(1).map(String::as_str);
         if probe_arg == Some("--probe-media") || probe_arg == Some("--probe-media-direct") {
             let snapshot = if probe_arg == Some("--probe-media-direct") {
@@ -2286,7 +2286,7 @@ fn main() {
                 ),
                 None => "{\"detected\":false}".to_string(),
             };
-            let path = std::env::temp_dir().join("primodock-smtc-probe.json");
+            let path = std::env::temp_dir().join("leme-smtc-probe.json");
             let _ = std::fs::write(&path, &payload);
             return;
         }
@@ -2529,5 +2529,5 @@ fn main() {
             launch_target
         ])
         .run(tauri::generate_context!())
-        .expect("Erro ao iniciar o PrimoDock Tauri");
+        .expect("Erro ao iniciar o Leme Tauri");
 }

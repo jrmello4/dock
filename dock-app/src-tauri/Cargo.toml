@@ -1,8 +1,8 @@
 [package]
-name = "primodock-tauri"
+name = "leme"
 version = "0.1.0"
-description = "PrimoDock Desktop - Ultraleve em Tauri v2 + Rust"
-authors = ["PrimoDock Clone"]
+description = "Leme Desktop - Ultraleve em Tauri v2 + Rust"
+authors = ["Leme"]
 edition = "2021"
 
 [features]

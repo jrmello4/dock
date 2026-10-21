@@ -1,5 +1,5 @@
 {
-  "name": "primodock-tauri",
+  "name": "leme",
   "version": "0.1.0",
   "private": true,
   "description": "Dock ultraleve com ambientes, widgets ao vivo, temas e mascote em Tauri v2 + Vanilla TypeScript",

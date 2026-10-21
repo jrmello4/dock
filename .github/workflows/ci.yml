@@ -1,4 +1,4 @@
-name: PrimoDock CI
+name: Leme CI
 
 on:
   push:

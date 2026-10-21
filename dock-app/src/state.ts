@@ -16,7 +16,7 @@ import {
 import { THEMES } from './themes';
 import { isTauriRuntime } from './tauri-bridge';
 
-const STORAGE_KEY = 'primodock_state_v3';
+const STORAGE_KEY = 'leme_state_v1';
 export const SCHEMA_VERSION = 2;
 
 const VALID_WIDGET_TYPES = new Set<WidgetType>([
@@ -69,7 +69,7 @@ export const PLAYLIST: TrackItem[] = [
   },
   {
     title: 'Midnight Lo-Fi Study',
-    artist: 'Primo Beats',
+    artist: 'Leme Beats',
     durationSec: 186,
     freqBase: 293.66,
     colors: ['#a78bfa', '#ec4899', '#1e1b4b'],

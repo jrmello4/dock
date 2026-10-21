@@ -1,6 +1,6 @@
-# PrimoDock Desktop (`./dock-app`)
+# Leme Desktop (`./dock-app`)
 
-Um Dock ultraleve para Desktop inspirado no **PrimoDock** (`dock.oprimo.dev`), construído com **Tauri v2 (Rust) + Vanilla TypeScript + Vite**.
+Um Dock ultraleve para Desktop, construído com **Tauri v2 (Rust) + Vanilla TypeScript + Vite**.
 
 ## Destaques de Performance
 - **Zero-framework no Frontend:** Manipulação direta de DOM/SVG e física de magnificação acelerada por GPU (`scale3d`).

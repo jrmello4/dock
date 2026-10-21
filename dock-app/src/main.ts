@@ -97,7 +97,7 @@ function bindAccessibleDockControl(
   });
 }
 
-class PrimoDockApp {
+class LemeApp {
   private state: DockState;
   private root: HTMLElement;
   private popoverEl!: HTMLElement;
@@ -1997,7 +1997,7 @@ class PrimoDockApp {
     this.popoverEl.innerHTML = `
       <div class="pop-head">
         <div>
-          <span class="pop-kicker">PrimoDock · Substituto da Barra de Tarefas</span>
+          <span class="pop-kicker">Leme · Substituto da Barra de Tarefas</span>
           <h4>Configurações & Personalização</h4>
         </div>
         <div style="display:flex;gap:6px">
@@ -2520,5 +2520,5 @@ class PrimoDockApp {
 
 const appRoot = document.getElementById('app');
 if (appRoot) {
-  new PrimoDockApp(appRoot);
+  new LemeApp(appRoot);
 }

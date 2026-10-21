@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "PrimoDock",
+  "productName": "Leme",
   "version": "0.1.0",
-  "identifier": "dev.primodock.desktop",
+  "identifier": "dev.leme.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5175",
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "PrimoDock",
+        "title": "Leme",
         "width": 1360,
         "height": 620,
         "resizable": false,

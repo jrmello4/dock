@@ -529,7 +529,7 @@ body {
 }
 
 /* ============================================================
-   THE DOCK STAGE & BAR (PrimoDock Architecture)
+   THE DOCK STAGE & BAR (Leme Architecture)
    ============================================================ */
 .dock-wrapper {
   position: relative;
@@ -807,7 +807,7 @@ body {
   flex-shrink: 0;
 }
 
-/* Wide Widget Cards inside the Dock (PrimoDock exact aesthetic) */
+/* Wide Widget Cards inside the Dock (Leme exact aesthetic) */
 .w-card {
   width: 100%;
   height: calc(var(--ico) * 0.84);
