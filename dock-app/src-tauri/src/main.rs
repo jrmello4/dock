@@ -2212,6 +2212,34 @@ fn reanchor_hub(window: WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn check_update(app: tauri::AppHandle, install: bool) -> Result<String, String> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    let updater = app.updater().map_err(|error| error.to_string())?;
+    let update = updater.check().await.map_err(|error| error.to_string())?;
+
+    let Some(update) = update else {
+        return Ok("up-to-date".to_string());
+    };
+
+    if !install {
+        return Ok(format!("available:{}", update.version));
+    }
+
+    let version = update.version.clone();
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|error| error.to_string())?;
+
+    // On Windows the installer exits the app automatically; elsewhere restart explicitly.
+    #[cfg(not(target_os = "windows"))]
+    app.restart();
+
+    Ok(format!("installed:{version}"))
+}
+
+#[tauri::command]
 fn set_autostart(enabled: bool) -> Result<(), String> {
     set_autostart_registry(enabled)
 }
@@ -2770,6 +2798,7 @@ fn main() {
     let fullscreen_for_setup = Arc::clone(&fullscreen_active);
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState {
             sys: Mutex::new(sys),
             interactive_rect,
@@ -2824,6 +2853,7 @@ fn main() {
             reanchor_hub,
             set_autostart,
             is_autostart_enabled,
+            check_update,
             set_secret,
             get_secret,
             delete_secret,

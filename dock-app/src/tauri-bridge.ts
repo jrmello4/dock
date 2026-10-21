@@ -257,6 +257,13 @@ export async function fetchApiJson(url: string, token: string): Promise<string> 
   return await invoke<string>('fetch_api_json', { url, token });
 }
 
+/** Checks GitHub Releases for a newer signed build. `install` downloads and applies it. */
+export async function checkForUpdates(install: boolean): Promise<string> {
+  if (!isTauriRuntime()) throw new Error('Disponível apenas no app desktop.');
+  const { invoke } = await import('@tauri-apps/api/core');
+  return await invoke<string>('check_update', { install });
+}
+
 export async function sendNativeMediaControl(
   action: 'play_pause' | 'next' | 'prev' | 'vol_up' | 'vol_down' | 'vol_mute'
 ): Promise<void> {

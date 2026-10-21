@@ -9,6 +9,7 @@ import {
   savePersistentState,
 } from '../state';
 import {
+  checkForUpdates,
   clearHubAnchor,
   deleteSecret,
   fetchApiJson,
@@ -122,6 +123,9 @@ class LemeHub {
   private apiError = '';
   private apiLoading = false;
   private apiTokenConfigured = false;
+  private updateStatus = '';
+  private updateAvailable = '';
+  private updateBusy = false;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -158,6 +162,10 @@ class LemeHub {
     if (this.state.hub.showApi && this.state.hub.api.url) {
       void this.pollApi();
     }
+
+    window.setTimeout(() => {
+      if (this.state.hub.autoUpdate) void this.autoUpdate();
+    }, 15_000);
   }
 
   private mount(): void {
@@ -249,6 +257,16 @@ class LemeHub {
         return;
       }
 
+      if (target.closest('[data-check-update]')) {
+        void this.checkUpdates(false);
+        return;
+      }
+
+      if (target.closest('[data-install-update]')) {
+        void this.checkUpdates(true);
+        return;
+      }
+
       if (target.closest('[data-api-token-clear]')) {
         void this.clearApiToken();
         return;
@@ -336,6 +354,9 @@ class LemeHub {
           savePersistentState(this.state);
           this.applyFullscreenVisibility(this.state.metrics.fullscreenActive);
           this.renderPanel();
+        } else if (key === 'autoUpdate') {
+          this.state.hub.autoUpdate = hubToggle.checked;
+          savePersistentState(this.state);
         }
       }
     });
@@ -413,6 +434,9 @@ class LemeHub {
     window.setInterval(() => {
       if (this.state.hub.showApi && this.state.hub.api.url) void this.pollApi();
     }, 60_000);
+    window.setInterval(() => {
+      if (this.state.hub.autoUpdate) void this.autoUpdate();
+    }, 6 * 60 * 60 * 1000);
   }
 
   private applyAppearance(): void {
@@ -744,6 +768,19 @@ class LemeHub {
         <button type="button" class="btn-ghost" data-reset-position>Reposicionar no canto</button>
       </div>
       <p class="hint">Arraste pela alça ⠿ à esquerda da pílula para mover o Leme.</p>
+      <div class="setting-row">
+        <label>Atualizações automáticas</label>
+        <input type="checkbox" data-hub-toggle="autoUpdate" ${hub.autoUpdate ? 'checked' : ''} />
+      </div>
+      <div class="pomo-modes" style="margin-top:8px">
+        <button type="button" class="btn-ghost" data-check-update ${this.updateBusy ? 'disabled' : ''}>Verificar atualizações</button>
+        ${
+          this.updateAvailable
+            ? `<button type="button" class="btn-solid" data-install-update>Instalar ${escapeHtml(this.updateAvailable)}</button>`
+            : ''
+        }
+      </div>
+      <p class="hint" data-update-status>${escapeHtml(this.updateStatus)}</p>
       <button type="button" class="danger" data-quit>Sair do Leme</button>
       <p class="version">Leme 0.1.0 · a barra do Windows fica intacta</p>
     `;
@@ -1028,6 +1065,43 @@ class LemeHub {
     const focused = document.activeElement;
     if (focused instanceof HTMLInputElement && this.panelEl.contains(focused)) return;
     this.renderPanel();
+  }
+
+  private async checkUpdates(install: boolean): Promise<void> {
+    this.updateBusy = true;
+    this.updateStatus = install ? 'Instalando atualização…' : 'Verificando atualizações…';
+    if (this.openPanel === 'settings') this.renderPanel();
+
+    try {
+      const result = await checkForUpdates(install);
+      if (result.startsWith('available:')) {
+        this.updateAvailable = result.slice('available:'.length);
+        this.updateStatus = `Versão ${this.updateAvailable} disponível.`;
+      } else if (result.startsWith('installed:')) {
+        this.updateAvailable = '';
+        this.updateStatus = `Atualizado para ${result.slice('installed:'.length)}. Reiniciando…`;
+      } else {
+        this.updateAvailable = '';
+        this.updateStatus = 'Você está na última versão.';
+      }
+    } catch (error) {
+      this.updateStatus =
+        error instanceof Error ? error.message : 'Falha ao verificar atualizações.';
+    } finally {
+      this.updateBusy = false;
+      if (this.openPanel === 'settings') this.renderPanel();
+    }
+  }
+
+  private async autoUpdate(): Promise<void> {
+    try {
+      const result = await checkForUpdates(true);
+      if (result.startsWith('installed:')) {
+        this.updateStatus = `Atualizado para ${result.slice('installed:'.length)}.`;
+      }
+    } catch {
+      // Silent: the manual check surfaces errors.
+    }
   }
 
   private async pollMedia(): Promise<void> {

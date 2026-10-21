@@ -160,6 +160,7 @@ export interface HubSettings {
   showDaily: boolean;
   showApi: boolean;
   showOverFullscreen: boolean;
+  autoUpdate: boolean;
   anchor: HubAnchor | null;
   api: HubApiConfig;
 }

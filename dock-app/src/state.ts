@@ -431,6 +431,7 @@ export function createDefaultState(): DockState {
       showDaily: true,
       showApi: false,
       showOverFullscreen: false,
+      autoUpdate: true,
       anchor: null,
       api: {
         name: 'API',
@@ -497,6 +498,7 @@ function sanitizeHub(raw: unknown, base: HubSettings): HubSettings {
       typeof obj.showOverFullscreen === 'boolean'
         ? obj.showOverFullscreen
         : base.showOverFullscreen,
+    autoUpdate: typeof obj.autoUpdate === 'boolean' ? obj.autoUpdate : base.autoUpdate,
     anchor,
     api: sanitizeHubApi(obj.api, base.api),
   };

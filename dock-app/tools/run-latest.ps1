@@ -6,6 +6,18 @@ Write-Host 'Parando o Leme em execução...'
 Get-Process leme -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 600
 
+# Signing key for updater artifacts (kept outside the repository).
+$keyPath = Join-Path $env:USERPROFILE '.tauri\leme.key'
+$passPath = Join-Path $env:USERPROFILE '.tauri\leme.key.password'
+if (Test-Path $keyPath) {
+    $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content -Raw $keyPath).Trim()
+    if (Test-Path $passPath) {
+        $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = (Get-Content -Raw $passPath).Trim()
+    }
+} else {
+    Write-Host 'Aviso: chave de assinatura nao encontrada; o build com updater pode falhar.'
+}
+
 Write-Host 'Compilando a última versão (release + instaladores)...'
 & npm.cmd run tauri -- build
 if ($LASTEXITCODE -ne 0) {

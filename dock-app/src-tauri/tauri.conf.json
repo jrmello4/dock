@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Leme",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "dev.leme.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -31,9 +31,18 @@
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' ipc: http://ipc.localhost https://api.open-meteo.com https://geocoding-api.open-meteo.com https://ipwho.is https://api.github.com https://github-contributions-api.jogruber.de https://itunes.apple.com; object-src 'none'; base-uri 'self'"
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/jrmello4/dock/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM1Q0Y1RjAwMTc2RTM3NDAKUldSQU4yNFhBRi9QTlljaXNxNzV0TlBXYTc2WDJ5QVU2MFZpV3ZJSE1GUEhYRzJ5Wm51c3lERGEK"
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
